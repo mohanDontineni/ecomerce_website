@@ -1,0 +1,72 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mdcart",
+  "main": "./dist/server/index.js",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "find_additional_modules": true,
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist/client"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "env": {
+    "staging": {
+      "name": "mdcart-staging",
+      "workers_dev": true,
+      "vars": {
+        "NEXT_PUBLIC_SITE_URL": "https://staging-shop.example.com"
+      },
+      "routes": [
+        {
+          "pattern": "staging-shop.example.com",
+          "custom_domain": true
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mdcart-staging",
+          "database_id": "REPLACE_WITH_STAGING_D1_DATABASE_ID",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "FILES",
+          "bucket_name": "mdcart-staging-files"
+        }
+      ]
+    },
+    "production": {
+      "name": "mdcart-production",
+      "workers_dev": false,
+      "vars": {
+        "NEXT_PUBLIC_SITE_URL": "https://shop.example.com"
+      },
+      "routes": [
+        {
+          "pattern": "shop.example.com",
+          "custom_domain": true
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mdcart-production",
+          "database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "FILES",
+          "bucket_name": "mdcart-production-files"
+        }
+      ]
+    }
+  }
+}

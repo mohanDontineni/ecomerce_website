@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1791935300715,
+      "tag": "0000_curious_lilith",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1791935688842,
+      "tag": "0001_slim_warstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791943071825,
+      "tag": "0002_conscious_sinister_six",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791977514092,
+      "tag": "0003_mighty_guardian",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792025201058,
+      "tag": "0004_mdcart_brand",
+      "breakpoints": true
+    }
+  ]
+}
