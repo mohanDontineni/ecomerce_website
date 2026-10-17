@@ -8,10 +8,10 @@ than a traditional database connection string or local upload directory.
 The binding names are part of the application contract and must not be
 renamed without changing the source:
 
-| Binding | Service | Purpose |
-| --- | --- | --- |
-| `DB` | Cloudflare D1 | Products, variants, inventory, customers, orders, users, sessions, settings, and audit history |
-| `FILES` | Cloudflare R2 | Product images, logos, and theme/background media |
+| Binding | Service       | Purpose                                                                                                                                                                                       |
+| ------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB`    | Cloudflare D1 | Products, variants, per-location inventory, retail locations/registers/shifts/sales, suppliers, purchase orders, import jobs, customers, orders, users, sessions, settings, and audit history |
+| `FILES` | Cloudflare R2 | Product images, logos, and theme/background media                                                                                                                                             |
 
 Keep the R2 bucket private. MDCart serves authorized media through its own
 same-origin `/api/media` route, so a public R2 hostname and public-bucket CORS
@@ -19,9 +19,10 @@ configuration are not required.
 
 ## Application variables
 
-| Variable | Required | Secret | Description |
-| --- | --- | --- | --- |
-| `NEXT_PUBLIC_SITE_URL` | Local: no; staging/production: yes | No | Exact public origin used for canonical and social metadata, for example `https://shop.example.com`. Use no path or trailing slash. |
+| Variable                    | Required                           | Secret | Description                                                                                                                        |
+| --------------------------- | ---------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_SITE_URL`      | Local: no; staging/production: yes | No     | Exact public origin used for canonical and social metadata, for example `https://shop.example.com`. Use no path or trailing slash. |
+| `MDCART_BOOTSTRAP_PASSWORD` | Hosted bootstrap and legacy upgrade | Yes    | One-time, 32-byte-or-longer owner password. Delete it after the forced password replacement.                                       |
 
 Copy `.env.example` to `.env.local` for local development. `.env.local` is
 ignored by Git. Values prefixed with `NEXT_PUBLIC_` are public and must never
@@ -41,11 +42,11 @@ secret store.
 
 Use separate resources for every persistent environment:
 
-| Environment | Origin | D1 | R2 | Intended use |
-| --- | --- | --- | --- | --- |
-| Local | `http://localhost:3000` | Project-local Miniflare state | Project-local Miniflare state | Development with demo bootstrap and mock payment |
-| Staging | A private HTTPS hostname | Dedicated staging database | Dedicated staging bucket | Migration, integration, and acceptance testing |
-| Production | One canonical HTTPS hostname | Dedicated production database | Dedicated production bucket | Live store traffic |
+| Environment | Origin                       | D1                            | R2                            | Intended use                                     |
+| ----------- | ---------------------------- | ----------------------------- | ----------------------------- | ------------------------------------------------ |
+| Local       | `http://localhost:3000`      | Project-local Miniflare state | Project-local Miniflare state | Development with demo bootstrap and mock payment |
+| Staging     | A private HTTPS hostname     | Dedicated staging database    | Dedicated staging bucket      | Migration, integration, and acceptance testing   |
+| Production  | One canonical HTTPS hostname | Dedicated production database | Dedicated production bucket   | Live store traffic                               |
 
 Wrangler bindings and `vars` are not inherited by named environments. Repeat
 `DB`, `FILES`, and `NEXT_PUBLIC_SITE_URL` inside every environment block, as
@@ -69,11 +70,21 @@ Worker to production D1 or R2.
 
 ## Authentication and integration boundaries
 
-Admin authentication is owned by MDCart and works with D1. A fresh database
-can be claimed with `admin` / `admin`, after which password replacement and
-owner-email verification are mandatory. The development verification code is
-returned to the browser. Protect bootstrap access and connect transactional
-email before public production use.
+Admin authentication is owned by MDCart and works with D1. `pnpm dev` enables
+`admin` / `admin` only on `localhost`, `127.0.0.1`, or `::1`. A hosted
+database instead requires username `admin` and the runtime secret
+`MDCART_BOOTSTRAP_PASSWORD`; it must contain at least 32 UTF-8 bytes. The
+accepted password is immediately subject to the required password-replacement
+flow. On an upgraded database whose forced-reset owner still has the historical
+`admin` password, the hosted secret securely replaces that legacy hash before
+login; hosted `admin` / `admin` is rejected. Delete the environment secret
+after the owner chooses a new password. Never set
+`MDCART_ALLOW_DEMO_BOOTSTRAP` in a hosted environment—the build config supplies
+that flag only to the local Vite development server.
+
+The development verification code is returned to the authenticated browser.
+Connect transactional email and stop returning codes before public production
+use.
 
 Customer account login currently expects the identity headers and sign-in
 routes supplied by OpenAI Sites. A direct Cloudflare Worker deployment still
@@ -84,6 +95,132 @@ The included payment adapter is a mock that authorizes immediately and never
 collects card data. Connect a hosted, PCI-compliant payment provider and signed
 webhooks before taking real payments.
 
+## Retail operations configuration
+
+Retail configuration is stored in D1 rather than environment variables. Apply
+all checked-in migrations before opening the Retail hub. On a new or upgraded
+single-location database, the first authorized Retail hub request ensures a
+main location and register exist and initializes location inventory from the
+legacy catalog stock projection. Additional locations can be `store`,
+`warehouse`, or `virtual`; give each one a unique code, valid IANA timezone,
+and tax rate. Registers can be attached to active store or virtual locations,
+but not warehouses.
+
+POS requires an open shift for the selected register, and a cashier can post a
+sale only to a shift that same cashier opened. Opening a shift records
+opening cash; cash sales and cash refunds update expected cash; closing a shift
+records counted cash and the variance. Sale completion calculates prices, tax,
+stock availability, tender coverage, and change on the server. A unique
+`Idempotency-Key` header protects checkout from duplicate submission.
+
+The current sale refund operation is a full refund. It creates reversing
+tenders, restores all sale quantities at the original location, and updates
+the shift's expected cash for a cash refund. Add a separately authorized
+partial-return workflow before advertising partial refunds.
+
+Supplier and purchase-order records are also D1-backed. A submitted purchase
+order targets one active location; receiving can be partial, cannot exceed the
+ordered quantity, and adds stock to that destination through inventory
+movement records.
+
+Retail capabilities follow the existing team role:
+
+| Role             | Retail access                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `owner`, `admin` | All retail, inventory, catalog-import, POS, register, purchasing, sales, and report permissions                      |
+| `cashier`        | Retail view, inventory view, POS sales, register shift management, and sales view                                    |
+| `purchasing`     | Retail view, inventory view/manage, supplier and purchase-order management, catalog imports, sales view, and reports |
+| `catalog`        | Retail and inventory view/manage plus catalog imports; no POS or purchasing                                          |
+| `fulfillment`    | Inventory, POS, registers, purchasing, sales, and reports; no catalog import                                         |
+| `support`        | Read-only retail, sales, and report access                                                                           |
+
+### External payment terminals
+
+MDCart's current POS tender API is a cash accounting boundary, not a terminal
+or card-data adapter. The server rejects `card`, `gift_card`, `store_credit`,
+and `other` tenders even if the browser supplies a provider reference. It must
+never receive a PAN, CVV, PIN, magnetic-stripe/EMV payload, or terminal key.
+
+To enable non-cash POS, implement a trusted server-side adapter that verifies a
+PCI-compliant terminal/provider response or webhook before writing a captured
+tender. Browser-supplied references alone are not proof of payment. Provider
+calls need their own idempotency, timeouts, retry reconciliation, refund API,
+and audit trail. MDCart does not currently drive, pair, discover, or settle
+external terminals.
+
+## Bulk inventory import contract
+
+The Retail hub accepts `csv`, `tsv`, `json`, and `xlsx`. Parsing,
+header detection, column mapping, product-family grouping, and category
+suggestions happen before the reviewed rows are sent to the server.
+
+Choose one behavior for each file:
+
+| UI mode            | Server kind          | Effect                                                                                                                       | Required row values                                  |
+| ------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Catalog upsert     | `catalog_upsert`     | Creates a product family or updates/appends variants by SKU; an optional stock value becomes the location's on-hand quantity | Unique `sku` and product `name`                      |
+| Inventory snapshot | `inventory_snapshot` | Sets the selected location's on-hand quantity to an authoritative count                                                      | Existing `sku` and non-negative whole-number `stock` |
+| Inventory delta    | `inventory_delta`    | Adds a signed quantity to the selected location's current on-hand value                                                      | Existing `sku` and signed whole-number `stockDelta`  |
+
+Inventory-only modes consume only `sku` plus their selected quantity field;
+unrelated catalog columns are ignored. Catalog imports without an explicit
+publishing `status` remain safely in `draft`. Category or compliance review
+also forces the product to `draft`.
+
+Recommended catalog columns are `parentSku`, `sku`, `barcode`, `name`,
+`description`, `brand`, `categoryPath`, `price`, `compareAtPrice`,
+`cost`, `stock`, `lowStockThreshold`, `status`, `imageUrls`, and up
+to three option name/value pairs. Friendly headings such as `Parent SKU`,
+`Category path`, `Stock delta`, `Option 1 name`, and `Option 1 value`
+are detected automatically and can be remapped in the review UI. Store SKUs
+and barcodes as text in spreadsheets so leading zeros survive. Image URLs must
+use HTTPS. Money values in uploaded files are decimal currency values; MDCart
+normalizes them to integer cents.
+
+For deterministic grouping, use the same explicit `parentSku` on every child
+row in a variant family. The parent identifier becomes the product-level SKU
+and must differ from every child `sku`. MDCart also detects variant rows with
+options and a shared normalized name, brand, and category, assigns a stable
+internal parent SKU, and marks that auto-grouped family for review. Contiguous
+child rows may inherit a parent SKU, name, description, brand, category,
+publishing status, and product images from the preceding family row. Explicit
+parent SKUs remain the safest way to disambiguate products with similar names;
+separate inferred families with the same identity are rejected until an
+explicit parent is supplied.
+
+Every child in a multi-row family must provide a unique combination with a
+value for every option dimension, using at most three dimensions, 40
+characters per option name/value, and 100 variants. Rows without a parent or
+variant-option evidence remain independent products. See
+[the example CSV](./examples/inventory-import.csv).
+
+Imports are deliberately review-first:
+
+1. Select the target location, behavior, and file.
+2. Confirm or edit the detected sheet/header and column mapping; each edit
+   re-analyzes the source file locally.
+3. Review inferred categories, grouped variants, warnings, and row errors.
+4. Stage only the reviewed rows. A staged job accepts 1–2,000 rows; split a
+   larger file into multiple jobs. The normalized reviewed payload is limited
+   to 8 MB, independent of the original workbook size.
+5. Apply only a ready job. Staging never changes catalog or inventory data,
+   and any staged error requires correction and a newly staged review.
+6. If application is interrupted, use **Resume apply** in Import history.
+   Completed rows replay idempotently, and a stale apply lease can be safely
+   reclaimed after its timeout.
+
+Application is permission checked, idempotent at the job/row level, recorded
+in the audit log, and writes inventory movement records. Keep the source file
+and completed job ID with operational records. Category suggestions—especially
+regulated-category warnings—are review aids, not compliance approval.
+
+MDCart also deduplicates an identical inventory-delta payload for the same
+location, returning the original staged job instead of adding the quantities a
+second time. The Retail hub exposes a deliberate “Treat this identical delta
+as a new stock movement” option, and API clients may send `forceNew: true`,
+only after reconciling the prior job and confirming that the same deltas really
+must be applied again.
+
 ## Reverse proxies
 
 Direct Worker Custom Domains are the supported custom-domain path. If an
@@ -93,3 +230,10 @@ sizes, and avoid caching `/api`, `/admin`, `/account`, and `/checkout`.
 MDCart derives secure-cookie behavior, invite links, and checkout return URLs
 from the request URL; an incorrect proxy origin can make those values unsafe
 or unusable.
+
+For every local, staging, production, or custom-DNS deployment, run the same
+schema migrations before the matching application version. Keep each
+environment's locations, shifts, imports, and purchase orders in its own D1
+database. Set `NEXT_PUBLIC_SITE_URL` to the exact canonical HTTPS origin and
+use that origin for terminal/provider return and webhook allowlists; changing
+DNS does not migrate data or terminal credentials.

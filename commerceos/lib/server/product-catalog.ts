@@ -67,15 +67,27 @@ function pathSlug(value: string): string {
 
 function boundedMoney(value: unknown, nullable = true): number | null {
   if (value == null && nullable) return null;
-  if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 100_000_000_000) {
-    throw new CatalogInputError('Variant prices must be non-negative whole cents.');
+  if (
+    !Number.isSafeInteger(value) ||
+    Number(value) < 0 ||
+    Number(value) > 100_000_000_000
+  ) {
+    throw new CatalogInputError(
+      'Variant prices must be non-negative whole cents.',
+    );
   }
   return Number(value);
 }
 
 function boundedCount(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 10_000_000) {
-    throw new CatalogInputError(`${label} must be a non-negative whole number.`);
+  if (
+    !Number.isSafeInteger(value) ||
+    Number(value) < 0 ||
+    Number(value) > 10_000_000
+  ) {
+    throw new CatalogInputError(
+      `${label} must be a non-negative whole number.`,
+    );
   }
   return Number(value);
 }
@@ -90,12 +102,16 @@ export function normalizeCategoryPath(
     .filter(Boolean);
   if (path.length === 0) return ['General'];
   if (path.length > 5 || path.some((value) => value.length > 80)) {
-    throw new CatalogInputError('Use up to five category levels, 80 characters each.');
+    throw new CatalogInputError(
+      'Use up to five category levels, 80 characters each.',
+    );
   }
   return path;
 }
 
-export function normalizeProductAttributes(input: unknown): CatalogAttributeInput[] {
+export function normalizeProductAttributes(
+  input: unknown,
+): CatalogAttributeInput[] {
   if (input == null) return [];
   if (!Array.isArray(input) || input.length > 50) {
     throw new CatalogInputError('Use up to 50 product specifications.');
@@ -114,8 +130,10 @@ export function normalizeProductAttributes(input: unknown): CatalogAttributeInpu
       typeof attribute.groupName === 'string' && attribute.groupName.trim()
         ? attribute.groupName.trim()
         : 'Details';
-    const name = typeof attribute.name === 'string' ? attribute.name.trim() : '';
-    const value = typeof attribute.value === 'string' ? attribute.value.trim() : '';
+    const name =
+      typeof attribute.name === 'string' ? attribute.name.trim() : '';
+    const value =
+      typeof attribute.value === 'string' ? attribute.value.trim() : '';
     if (
       !name ||
       !value ||
@@ -135,7 +153,9 @@ export function normalizeProductAttributes(input: unknown): CatalogAttributeInpu
     }
     seen.add(key);
     if (attribute.visible != null && typeof attribute.visible !== 'boolean') {
-      throw new CatalogInputError('Specification visibility must be true or false.');
+      throw new CatalogInputError(
+        'Specification visibility must be true or false.',
+      );
     }
     return {
       groupName,
@@ -201,17 +221,25 @@ export function normalizeCatalogConfiguration(
     };
   }
   if (optionsInput.length > 3) {
-    throw new CatalogInputError('A product can currently use up to three options.');
+    throw new CatalogInputError(
+      'A product can currently use up to three options.',
+    );
   }
 
   const options = optionsInput.map((rawOption) => {
-    if (rawOption == null || typeof rawOption !== 'object' || Array.isArray(rawOption)) {
+    if (
+      rawOption == null ||
+      typeof rawOption !== 'object' ||
+      Array.isArray(rawOption)
+    ) {
       throw new CatalogInputError('Each product option must be an object.');
     }
     const option = rawOption as { name?: unknown; values?: unknown };
     const name = typeof option.name === 'string' ? option.name.trim() : '';
     if (!name || name.length > 40) {
-      throw new CatalogInputError('Each option needs a name up to 40 characters.');
+      throw new CatalogInputError(
+        'Each option needs a name up to 40 characters.',
+      );
     }
     if (!Array.isArray(option.values)) {
       throw new CatalogInputError(`Add values for ${name}.`);
@@ -221,7 +249,9 @@ export function normalizeCatalogConfiguration(
         (value) => typeof value !== 'string' || value.trim().length === 0,
       )
     ) {
-      throw new CatalogInputError(`${name} contains an empty or invalid value.`);
+      throw new CatalogInputError(
+        `${name} contains an empty or invalid value.`,
+      );
     }
     const submittedValues = option.values
       .map((value) => (typeof value === 'string' ? value.trim() : ''))
@@ -234,22 +264,37 @@ export function normalizeCatalogConfiguration(
     if (values.length !== submittedValues.length) {
       throw new CatalogInputError(`${name} contains a duplicate value.`);
     }
-    if (values.length === 0 || values.length > 30 || values.some((value) => value.length > 40)) {
-      throw new CatalogInputError(`${name} needs 1–30 values, up to 40 characters each.`);
+    if (
+      values.length === 0 ||
+      values.length > 30 ||
+      values.some((value) => value.length > 40)
+    ) {
+      throw new CatalogInputError(
+        `${name} needs 1–30 values, up to 40 characters each.`,
+      );
     }
     return { name, values };
   });
 
-  const optionNames = new Set(options.map((option) => canonicalText(option.name)));
+  const optionNames = new Set(
+    options.map((option) => canonicalText(option.name)),
+  );
   if (optionNames.size !== options.length) {
     throw new CatalogInputError('Option names must be unique.');
   }
-  const expectedCount = options.reduce((count, option) => count * option.values.length, 1);
+  const expectedCount = options.reduce(
+    (count, option) => count * option.values.length,
+    1,
+  );
   if (expectedCount > 100) {
-    throw new CatalogInputError('This creates more than 100 variants. Use fewer option values.');
+    throw new CatalogInputError(
+      'This creates more than 100 variants. Use fewer option values.',
+    );
   }
   if (!Array.isArray(variantsInput) || variantsInput.length !== expectedCount) {
-    throw new CatalogInputError('Generate every option combination before saving.');
+    throw new CatalogInputError(
+      'Generate every option combination before saving.',
+    );
   }
 
   const signatures = new Set<string>();
@@ -264,24 +309,37 @@ export function normalizeCatalogConfiguration(
     }
     const variant = rawVariant as Record<string, unknown>;
     const optionValues = Array.isArray(variant.optionValues)
-      ? variant.optionValues.map((value) => (typeof value === 'string' ? value.trim() : ''))
+      ? variant.optionValues.map((value) =>
+          typeof value === 'string' ? value.trim() : '',
+        )
       : [];
     if (optionValues.length !== options.length) {
-      throw new CatalogInputError('A variant is missing one or more option values.');
+      throw new CatalogInputError(
+        'A variant is missing one or more option values.',
+      );
     }
     optionValues.forEach((value, index) => {
-      if (!options[index].values.some((candidate) => canonicalText(candidate) === canonicalText(value))) {
-        throw new CatalogInputError(`${value || 'A value'} is not valid for ${options[index].name}.`);
+      if (
+        !options[index].values.some(
+          (candidate) => canonicalText(candidate) === canonicalText(value),
+        )
+      ) {
+        throw new CatalogInputError(
+          `${value || 'A value'} is not valid for ${options[index].name}.`,
+        );
       }
     });
-    const signature = signatureFor(options, optionValues);
+    const signature = catalogOptionSignature(options, optionValues);
     if (signatures.has(signature)) {
       throw new CatalogInputError('Each option combination must be unique.');
     }
     signatures.add(signature);
-    const sku = typeof variant.sku === 'string' ? variant.sku.trim().toUpperCase() : '';
+    const sku =
+      typeof variant.sku === 'string' ? variant.sku.trim().toUpperCase() : '';
     if (!skuPattern.test(sku) || skus.has(sku)) {
-      throw new CatalogInputError('Each variant needs a unique SKU using letters, numbers, dots, dashes, or underscores.');
+      throw new CatalogInputError(
+        'Each variant needs a unique SKU using letters, numbers, dots, dashes, or underscores.',
+      );
     }
     skus.add(sku);
     if (
@@ -289,7 +347,9 @@ export function normalizeCatalogConfiguration(
       variant.status !== 'active' &&
       variant.status !== 'archived'
     ) {
-      throw new CatalogInputError('Choose active or archived for each variant.');
+      throw new CatalogInputError(
+        'Choose active or archived for each variant.',
+      );
     }
     const status = variant.status === 'archived' ? 'archived' : 'active';
     return {
@@ -363,7 +423,9 @@ export async function assignPrimaryCategory(
 ): Promise<void> {
   const db = database();
   await db.batch([
-    db.prepare('DELETE FROM product_categories WHERE product_id = ?').bind(productId),
+    db
+      .prepare('DELETE FROM product_categories WHERE product_id = ?')
+      .bind(productId),
     db
       .prepare(
         `INSERT INTO product_categories (product_id, category_id, is_primary)
@@ -410,7 +472,10 @@ export async function findCatalogSkuConflict(
   return variantConflict?.sku ?? null;
 }
 
-function signatureFor(options: CatalogOptionInput[], optionValues: string[]): string {
+export function catalogOptionSignature(
+  options: CatalogOptionInput[],
+  optionValues: string[],
+): string {
   if (options.length === 0) return 'default';
   return JSON.stringify(
     optionValues.map((value, index) => [
@@ -436,11 +501,15 @@ export async function replaceProductVariants(
     )
     .bind(productId)
     .all<{ id: string; sku: string; option_signature: string }>();
-  const byId = new Map(existing.results.map((variant) => [variant.id, variant]));
+  const byId = new Map(
+    existing.results.map((variant) => [variant.id, variant]),
+  );
   const bySignature = new Map(
     existing.results.map((variant) => [variant.option_signature, variant]),
   );
-  const bySku = new Map(existing.results.map((variant) => [variant.sku, variant]));
+  const bySku = new Map(
+    existing.results.map((variant) => [variant.sku, variant]),
+  );
   const usedIds = new Set<string>();
 
   const optionRows = configuration.options.map((option, index) => ({
@@ -462,7 +531,9 @@ export async function replaceProductVariants(
     0,
   );
   const expectedRevision = productMutation?.expectedUpdatedAt;
-  const expectedTime = expectedRevision ? Date.parse(expectedRevision) : Number.NaN;
+  const expectedTime = expectedRevision
+    ? Date.parse(expectedRevision)
+    : Number.NaN;
   const nowTime = Date.parse(now);
   const mutationRevision = productMutation
     ? new Date(
@@ -479,40 +550,52 @@ export async function replaceProductVariants(
     : '';
   const guardValues = productMutation ? [productId, mutationRevision] : [];
   const variantLinkRows: { variantId: string; optionValueId: string }[] = [];
-  const resolvedVariantRows = configuration.variants.map((variant, position) => {
-    const signature = signatureFor(configuration.options, variant.optionValues);
-    const requested = variant.id ? byId.get(variant.id) : undefined;
-    const reusable = requested ?? bySignature.get(signature) ?? bySku.get(variant.sku);
-    const id = reusable && !usedIds.has(reusable.id) ? reusable.id : newId('var');
-    usedIds.add(id);
-    variant.optionValues.forEach((value, optionIndex) => {
-      const option = optionRows[optionIndex];
-      const valueRow = valueRows.find(
-        (candidate) =>
-          candidate.optionId === option.id &&
-          canonicalText(candidate.value) === canonicalText(value),
+  const resolvedVariantRows = configuration.variants.map(
+    (variant, position) => {
+      const signature = catalogOptionSignature(
+        configuration.options,
+        variant.optionValues,
       );
-      if (!valueRow) throw new Error('A variant option value could not be resolved.');
-      variantLinkRows.push({ variantId: id, optionValueId: valueRow.id });
-    });
-    return {
-      id,
-      productId,
-      title: variant.optionValues.length > 0 ? variant.optionValues.join(' / ') : 'Default',
-      sku: variant.sku,
-      signature,
-      priceCents: variant.priceCents === base.priceCents ? null : variant.priceCents,
-      compareAtCents: variant.compareAtCents,
-      costCents: variant.costCents,
-      stock: variant.stock,
-      lowStockThreshold: variant.lowStockThreshold,
-      status: variant.status,
-      position,
-      isDefault: configuration.options.length === 0 ? 1 : 0,
-      createdAt: mutationRevision,
-      updatedAt: mutationRevision,
-    };
-  });
+      const requested = variant.id ? byId.get(variant.id) : undefined;
+      const reusable =
+        requested ?? bySignature.get(signature) ?? bySku.get(variant.sku);
+      const id =
+        reusable && !usedIds.has(reusable.id) ? reusable.id : newId('var');
+      usedIds.add(id);
+      variant.optionValues.forEach((value, optionIndex) => {
+        const option = optionRows[optionIndex];
+        const valueRow = valueRows.find(
+          (candidate) =>
+            candidate.optionId === option.id &&
+            canonicalText(candidate.value) === canonicalText(value),
+        );
+        if (!valueRow)
+          throw new Error('A variant option value could not be resolved.');
+        variantLinkRows.push({ variantId: id, optionValueId: valueRow.id });
+      });
+      return {
+        id,
+        productId,
+        title:
+          variant.optionValues.length > 0
+            ? variant.optionValues.join(' / ')
+            : 'Default',
+        sku: variant.sku,
+        signature,
+        priceCents:
+          variant.priceCents === base.priceCents ? null : variant.priceCents,
+        compareAtCents: variant.compareAtCents,
+        costCents: variant.costCents,
+        stock: variant.stock,
+        lowStockThreshold: variant.lowStockThreshold,
+        status: variant.status,
+        position,
+        isDefault: configuration.options.length === 0 ? 1 : 0,
+        createdAt: mutationRevision,
+        updatedAt: mutationRevision,
+      };
+    },
+  );
   const resolvedOptionRows = optionRows.map((option) => ({
     id: option.id,
     productId,
@@ -545,8 +628,17 @@ export async function replaceProductVariants(
       !assignment.startsWith('updated_at =')
     );
   });
-  productAssignments.push('stock = ?', 'low_stock_threshold = ?', 'updated_at = ?');
-  productValues.push(totalStock, base.lowStockThreshold, mutationRevision, productId);
+  productAssignments.push(
+    'stock = ?',
+    'low_stock_threshold = ?',
+    'updated_at = ?',
+  );
+  productValues.push(
+    totalStock,
+    base.lowStockThreshold,
+    mutationRevision,
+    productId,
+  );
   const statements: ReturnType<typeof db.prepare>[] = [];
   if (productMutation) {
     statements.push(
@@ -734,7 +826,9 @@ export async function replaceProductVariants(
   if (!productMutation) {
     statements.push(
       db
-        .prepare(`UPDATE products SET ${productAssignments.join(', ')} WHERE id = ?`)
+        .prepare(
+          `UPDATE products SET ${productAssignments.join(', ')} WHERE id = ?`,
+        )
         .bind(...productValues),
     );
   }
@@ -744,7 +838,10 @@ export async function replaceProductVariants(
   }
 }
 
-export async function syncProductStock(productId: string, now: string): Promise<void> {
+export async function syncProductStock(
+  productId: string,
+  now: string,
+): Promise<void> {
   await database()
     .prepare(
       `UPDATE products

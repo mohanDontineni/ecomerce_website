@@ -8,6 +8,7 @@ MDCart is a reference implementation rather than a turnkey regulated-commerce se
 
 - **Storefront:** department/category discovery, specification-aware search, grouped product details, image galleries, option selection, variant-aware cart and checkout, customer account, and order history
 - **Control center:** overview, reusable category paths, 50+ grouped retail product templates, up to three configurable option dimensions, grouped public/internal specifications, per-variant SKUs and inventory, multi-image uploads, stock ledger, order workflow, customer status, team invitations and roles, store copy/settings, audit log, and appearance studio
+- **Retail hub:** location-aware inventory and movement ledger, registers and cash shifts, barcode/SKU point of sale, receipt-level sales history and full refunds, suppliers, purchase orders, partial receiving, and review-first bulk catalog/inventory imports
 - **Identity:** session cookies, PBKDF2 password hashing, forced bootstrap-password replacement, email verification, team invitations, logout, and server-side route guards
 - **Customization:** 12 palettes × 6 moods × 4 shape systems for 288 maintained combinations, custom colors, background/poster assets, overlay control, preview, publishing, and version history
 - **Commerce:** integer-cent money values, server-authoritative variant pricing, SKU-level stock validation, immutable order option snapshots, idempotency keys, customer aggregates, and a provider-neutral payment interface
@@ -26,7 +27,7 @@ Storefront: `http://localhost:3000`
 
 Admin: `http://localhost:3000/admin`
 
-Demo bootstrap credentials: `admin` / `admin`
+Local-development bootstrap credentials: `admin` / `admin`
 
 On first login, MDCart restricts administration until the owner chooses a new password and verifies an email address. Local development displays the verification code in the setup flow; connect a transactional email adapter before public production use.
 
@@ -66,11 +67,26 @@ MDCart keeps different product concerns separate so the same codebase can serve 
 
 Regulated templates—including pharmacy, alcohol, medical products, gift cards, automotive fitment, and digital fulfillment—are catalog helpers rather than complete compliance or fulfillment systems. Merchants must add the authorization, jurisdiction, labeling, verification, fraud-control, and fulfillment workflows required for their market before production use.
 
+## Retail hub and bulk inventory
+
+The admin Retail hub extends the online catalog into store operations without creating a second product database:
+
+- **POS** sells the same variants used by the storefront. Choose a location and register, open a shift with its opening cash, find items by SKU or barcode, build a cart, and complete a cash sale. Non-cash tenders are rejected until a trusted server-side payment adapter verifies them.
+- **Sales** preserves receipt, location, register, cashier, line, tax, discount, tender, and shift details. The current refund workflow is a full refund: it records reversing tenders, returns quantities to the sale location, and updates shift cash totals where applicable.
+- **Purchasing** manages suppliers and submitted purchase orders. Receiving can be partial, adds stock only to the destination location, and leaves a location-inventory movement trail.
+- **Locations** separates on-hand quantities by store or warehouse, supports multiple registers, records exact-SKU adjustments, and displays the immutable movement ledger. The first retail visit creates a main location and register for an existing single-location catalog.
+
+The Bulk import tab accepts CSV, TSV, JSON, and XLSX files in three modes: catalog upsert, inventory snapshot (replace on-hand with a counted quantity), and inventory delta (add or subtract a signed quantity). MDCart parses and maps the file in the browser, groups variants, surfaces errors and category/compliance warnings, and requires a staged review before anything is applied. A staged job currently accepts 1–2,000 reviewed rows. See the [import configuration contract](./docs/CONFIGURATION.md#bulk-inventory-import-contract) and [sample catalog CSV](./docs/examples/inventory-import.csv).
+
+For deterministic variant families, give every child row the same `parentSku`; that parent identifier must differ from every child `sku`. When it is absent, contiguous rows with options and the same normalized name, brand, and category are auto-grouped for review, can inherit shared parent fields, and receive a stable internal parent identifier. Ambiguous duplicate inferred families are rejected until an explicit parent is supplied. Interrupted jobs can be resumed safely from Import history. Rows without variant evidence stay independent. Owners and admins have every retail permission. The `cashier` role can sell only against a shift that cashier opened, manage that shift, view inventory, and view sales; the `purchasing` role can manage inventory, suppliers and purchase orders, run catalog imports, and view sales/reports.
+
 ## Architecture
 
-The UI is organized under `app/` and `components/`. Server-only database, seed, catalog, and authentication helpers live under `lib/server/`. Payment contracts live under `lib/payments/`. API handlers in `app/api/` validate requests and keep privileged mutations behind server-side session checks.
+The UI is organized under `app/` and `components/`. Server-only database, seed, catalog, authentication, and retail helpers live under `lib/server/`. Payment contracts live under `lib/payments/`. API handlers in `app/api/` validate requests and keep privileged mutations behind server-side session checks. Retail sales, shifts, suppliers, purchase orders, receiving, refunds, and import application are server-authoritative and append audit or inventory-movement records.
 
 The mock payment adapter implements the same boundary expected of a real provider. A production adapter should create provider sessions, verify signed webhooks against the raw request body, persist payment attempts separately, and retain the existing idempotency behavior. Do not send raw card data through MDCart routes.
+
+Retail POS is cash-only by default. Its API rejects card, gift-card, store-credit, and other non-cash tenders until a trusted server-side adapter is implemented to authorize, capture, and verify those funds. Such an adapter must never send a PAN, CVV, PIN, track data, or terminal encryption key through MDCart routes.
 
 Product and theme media are written to R2 with generated object keys. Before exposing uploads to untrusted public users, add malware scanning and image re-encoding in the media adapter in addition to the current MIME and size validation.
 
@@ -82,11 +98,12 @@ For serious multi-store SaaS use, add tenant IDs and centralized tenant authoriz
 
 ## Security boundaries
 
-- The requested `admin` / `admin` credential exists only until the first successful password replacement. Treat it as a demo/bootstrap convenience, not a production secret.
+- `admin` / `admin` is enabled only by the local development server on a loopback hostname. Hosted first-owner setup requires a 32-byte-or-longer `MDCART_BOOTSTRAP_PASSWORD` runtime secret, which should be deleted after the forced password replacement.
 - Sessions and one-time codes are stored as hashes and expire.
 - Administration APIs require both password replacement and verified owner email.
 - Monetary totals and stock checks are calculated on the server.
 - The mock provider never collects payment-card data.
+- Retail checkout requires the cashier's own open register shift and an actor-scoped idempotency key; location inventory and cash expectations are updated on the server.
 
 See [`SECURITY.md`](./SECURITY.md) for reporting and production-hardening guidance.
 

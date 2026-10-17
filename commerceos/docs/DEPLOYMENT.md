@@ -39,6 +39,13 @@ ignored `.wrangler` directory. The initial development login is `admin` /
 Use local data only for development. Do not point local bindings at production
 resources.
 
+After the first login, open the Retail hub. A fresh database creates a main
+location and register when retail defaults are first needed. For a local
+end-to-end check, open a shift, sell a test SKU with a cash tender, inspect the
+receipt, issue its full refund, and close the shift. Then stage the
+[example inventory CSV](./examples/inventory-import.csv) and review it without
+applying, or apply it only to disposable local data.
+
 ## 3. Deploy through OpenAI Sites
 
 The checked-in `.openai/hosting.json` links this checkout to the original Site
@@ -46,6 +53,13 @@ and requests managed `DB` and `FILES` resources. A fork must create a new Site
 so the platform gives it a new project ID and isolated resources. Do not copy
 or reuse another operator's Site credentials, project ID, D1 database, or R2
 bucket.
+
+Before signing into a fresh hosted database—or upgrading one that still has the
+historical forced-reset `admin` password—add a unique
+`MDCART_BOOTSTRAP_PASSWORD` secret of at least 32 UTF-8 bytes in the Site's
+hosting environment settings. Sign in with username `admin` and that one-time
+secret, complete the forced password replacement, then remove the secret and
+deploy once more. Hosted deployments never accept `admin` / `admin`.
 
 OpenAI Sites supplies its own HTTPS hostname and deployment lifecycle. After a
 Site has been published, an owner can attach a bare custom hostname in the
@@ -99,10 +113,26 @@ pnpm exec wrangler d1 migrations apply DB --remote --config wrangler.deploy.json
 pnpm exec wrangler deploy --config wrangler.deploy.jsonc --env staging
 ```
 
-Test a clean bootstrap, uploads, inventory changes, checkout, email and payment
-adapters, and rollback procedures in staging. Restrict staging with Cloudflare
-Access or equivalent authentication; a hard-to-guess URL is not access
-control.
+Test a clean bootstrap, uploads, inventory changes, storefront checkout, Retail
+hub roles, location/register creation, shifts, POS sales and full refunds,
+supplier purchase-order receiving, bulk-import review/application, email and
+payment adapters, and rollback procedures in staging. Restrict staging with
+Cloudflare Access or equivalent authentication; a hard-to-guess URL is not
+access control.
+
+Configure the one-time owner secret in staging before login:
+
+```bash
+pnpm exec wrangler secret put MDCART_BOOTSTRAP_PASSWORD --config wrangler.deploy.jsonc --env staging
+```
+
+Use a unique value containing at least 32 UTF-8 bytes. This also rotates a
+legacy forced-reset `admin` hash during an upgrade. Sign in as `admin`, complete
+the forced password replacement, and remove the bootstrap secret:
+
+```bash
+pnpm exec wrangler secret delete MDCART_BOOTSTRAP_PASSWORD --config wrangler.deploy.jsonc --env staging
+```
 
 ## 6. Prepare and deploy production
 
@@ -110,9 +140,14 @@ Before the first public deployment:
 
 - connect a real transactional email flow and remove client-visible codes;
 - connect a hosted payment provider and signed, idempotent webhooks;
-- replace or protect the `admin` / `admin` bootstrap flow;
+- keep retail non-cash tenders disabled until the external payment
+  terminal/provider adapter described below verifies capture server-side;
+- configure a new production-only `MDCART_BOOTSTRAP_PASSWORD`, complete the
+  forced first-owner reset, and delete the secret immediately afterward;
 - configure edge rate limits for authentication, checkout, and uploads;
 - establish monitoring, retention, D1 recovery, and an independent R2 backup;
+- assign `cashier` and `purchasing` only to staff who need those duties,
+  and rehearse shift close, refund, receiving, and import recovery procedures;
 - confirm privacy, tax, shipping, accessibility, and regulated-product duties
   for the store's jurisdictions.
 
@@ -128,11 +163,73 @@ NEXT_PUBLIC_SITE_URL=https://shop.example.com pnpm build
 pnpm exec wrangler deploy --dry-run --config wrangler.deploy.jsonc --env production
 pnpm exec wrangler d1 migrations apply DB --remote --config wrangler.deploy.jsonc --env production
 pnpm exec wrangler deploy --config wrangler.deploy.jsonc --env production
+pnpm exec wrangler secret put MDCART_BOOTSTRAP_PASSWORD --config wrangler.deploy.jsonc --env production
 ```
+
+Use that secret once to create the owner and complete the required password
+reset, then delete it with `pnpm exec wrangler secret delete
+MDCART_BOOTSTRAP_PASSWORD --config wrangler.deploy.jsonc --env production`.
+Until the secret exists, a fresh production database rejects all first-owner
+logins, including `admin` / `admin`.
 
 Migrations are forward SQL files under `drizzle/`; MDCart does not generate an
 automatic down migration. A database rollback is a restore operation and must
 be rehearsed with the matching R2 backup.
+
+### Retail production acceptance
+
+Apply migrations before deploying the application version that exposes the
+Retail hub. The same D1 database stores the online catalog and retail
+locations, inventory, registers, shifts, sales, suppliers, purchase orders,
+and import jobs. Do not split those records across independently restored
+databases.
+
+In staging, validate at least the following with production-like roles and
+configuration:
+
+1. Confirm the main location/register or create the intended store, warehouse,
+   and virtual locations with correct IANA timezones and tax rates.
+2. As a `cashier`, open a register shift, verify another cashier cannot use it,
+   scan/search a SKU or barcode, complete a cash sale, review the receipt,
+   perform the supported full refund, and close the shift with an explainable
+   variance.
+3. As `purchasing`, create a supplier and purchase order, partially receive
+   it, finish receiving it, and verify stock moved only at the destination
+   location.
+4. Stage CSV/TSV/JSON/XLSX imports in catalog-upsert, inventory-snapshot, and
+   inventory-delta modes. Correct every error and review category warnings
+   before applying. The current server limit is 2,000 reviewed rows per staged
+   job, so test the operator's file-splitting procedure for larger feeds.
+5. Confirm rejected and repeated requests do not create duplicate sales,
+   receipts, inventory movements, refunds, or import application. Preserve
+   idempotency headers across safe client retries.
+
+Staging an import writes only a review job; applying a ready, error-free job is
+the separate mutation. Retain the original file, staged summary, operator, and
+job ID for reconciliation. Test backups and restore with open/closed shifts,
+partially received purchase orders, and completed import jobs present.
+
+### External POS payment-terminal boundary
+
+The deployed MDCart Worker records cash tenders but rejects non-cash POS
+tenders. It does not talk directly to a card reader and must not receive raw
+cardholder data. Enabling non-cash requires a trusted server-side terminal
+adapter that must:
+
+- use the terminal/provider's PCI-compliant SDK or hosted workflow;
+- authorize or capture before writing the MDCart sale;
+- verify capture server-side; a browser-supplied provider name/reference must
+  never be sufficient;
+- verify signatures, reconcile timeouts, and use provider-side idempotency;
+- map approved refunds to the provider while keeping MDCart's refund and stock
+  records consistent; and
+- prevent a declined or indeterminate payment from completing a sale.
+
+Keep terminal credentials and webhook secrets in each environment's secret
+store, never in `NEXT_PUBLIC_` values, Wrangler `vars`, committed files, or
+the browser bundle. MDCart does not currently implement terminal discovery,
+pairing, key management, settlement, or chargeback handling; the operator's
+adapter and procedures must own those functions.
 
 ## 7. Attach the global DNS name
 
@@ -157,6 +254,13 @@ Choose one canonical hostname. Redirect `www.example.com` to `example.com`, or
 the reverse, with a Cloudflare Redirect Rule instead of serving the same store
 on both. MDCart's admin cookie is host-only and its metadata advertises the
 single `NEXT_PUBLIC_SITE_URL` origin.
+
+Use that same canonical HTTPS origin in any payment-provider or terminal
+callback/webhook allowlist. DNS attachment changes routing only: it does not
+copy D1/R2 data, create retail locations, or move terminal secrets between
+local, staging, and production. Rebuild after changing
+`NEXT_PUBLIC_SITE_URL`, and revalidate signed callbacks and cookie behavior
+on the final hostname.
 
 After certificate issuance and DNS propagation, verify:
 
@@ -186,7 +290,9 @@ For each release:
 4. Dry-run the Worker upload.
 5. Apply migrations to staging, test, then apply them to production.
 6. Deploy the matching Worker artifact.
-7. Smoke-test the storefront, admin login, media, inventory, and checkout.
+7. Smoke-test the storefront, admin login, media, inventory, checkout, Retail
+   hub location/register selection, shift open/close, POS sale/refund,
+   purchase-order receiving, and a review-only bulk import.
 8. Retain the previous Worker version and the pre-migration data recovery point.
 
 Rolling back only the Worker does not reverse a schema or data migration.

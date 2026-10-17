@@ -1,16 +1,33 @@
-import { authErrorResponse, AuthFailure, requireAdmin } from '@/lib/server/auth';
+import {
+  authErrorResponse,
+  AuthFailure,
+  requireAdmin,
+} from '@/lib/server/auth';
 import { audit, database, isoNow, newId } from '@/lib/server/db';
 
-const allowedRoles = new Set(['admin', 'catalog', 'fulfillment', 'support']);
+const allowedRoles = new Set([
+  'admin',
+  'catalog',
+  'fulfillment',
+  'support',
+  'cashier',
+  'purchasing',
+]);
 
 function encode(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+  return btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '');
 }
 
 async function tokenHash(value: string): Promise<string> {
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  const bytes = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
   return encode(new Uint8Array(bytes));
 }
 
@@ -18,7 +35,11 @@ export async function POST(request: Request) {
   try {
     const user = await requireAdmin(request);
     if (!['owner', 'admin'].includes(user.role)) {
-      throw new AuthFailure(403, 'FORBIDDEN', 'Only owners and admins can invite team members.');
+      throw new AuthFailure(
+        403,
+        'FORBIDDEN',
+        'Only owners and admins can invite team members.',
+      );
     }
     const body = (await request.json()) as { email?: string; role?: string };
     const email = body.email?.trim().toLowerCase();
@@ -37,7 +58,9 @@ export async function POST(request: Request) {
     const hash = await tokenHash(rawToken);
     const id = newId('inv');
     const now = isoNow();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(
+      Date.now() + 7 * 24 * 60 * 60 * 1000,
+    ).toISOString();
     await database()
       .prepare(
         `INSERT INTO invitations

@@ -1,0 +1,9 @@
+Parent SKU,SKU,Barcode,Name,Description,Brand,Category path,Price,Compare at price,Cost,Stock,Low stock threshold,Status,Image URLs,Option 1 name,Option 1 value,Option 2 name,Option 2 value
+MDC-TEE-CORE,MDC-TEE-CORE-BLK-S,100000000001,Core Cotton Tee,Everyday crew neck cotton tee,Example Apparel,Men > Apparel > Shirts > T-Shirts,24.00,30.00,9.50,18,5,active,,Size,S,Color,Black
+MDC-TEE-CORE,MDC-TEE-CORE-BLK-M,100000000002,Core Cotton Tee,Everyday crew neck cotton tee,Example Apparel,Men > Apparel > Shirts > T-Shirts,24.00,30.00,9.50,22,5,active,,Size,M,Color,Black
+MDC-TEE-CORE,MDC-TEE-CORE-NVY-S,100000000003,Core Cotton Tee,Everyday crew neck cotton tee,Example Apparel,Men > Apparel > Shirts > T-Shirts,24.00,30.00,9.50,14,5,active,,Size,S,Color,Navy
+MDC-TEE-CORE,MDC-TEE-CORE-NVY-M,100000000004,Core Cotton Tee,Everyday crew neck cotton tee,Example Apparel,Men > Apparel > Shirts > T-Shirts,24.00,30.00,9.50,16,5,active,,Size,M,Color,Navy
+MDC-SHOE-URBAN,MDC-SHOE-URBAN-BLK-9,200000000001,Urban Walking Sneaker,Lightweight everyday walking shoe,Example Footwear,Shoes > Men > Sneakers,79.00,99.00,36.00,8,3,active,,Size,9,Color,Black
+MDC-SHOE-URBAN,MDC-SHOE-URBAN-BLK-10,200000000002,Urban Walking Sneaker,Lightweight everyday walking shoe,Example Footwear,Shoes > Men > Sneakers,79.00,99.00,36.00,11,3,active,,Size,10,Color,Black
+MDC-COFFEE-HOUSE,MDC-COFFEE-HOUSE-MED-12,300000000001,House Blend Coffee,Balanced whole bean coffee,Example Pantry,Grocery > Beverages > Coffee,14.99,,6.25,24,6,active,,Roast,Medium,Pack size,12 oz
+MDC-COFFEE-HOUSE,MDC-COFFEE-HOUSE-DARK-12,300000000002,House Blend Coffee,Balanced whole bean coffee,Example Pantry,Grocery > Beverages > Coffee,14.99,,6.25,19,6,active,,Roast,Dark,Pack size,12 oz

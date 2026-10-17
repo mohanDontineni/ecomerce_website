@@ -6,11 +6,11 @@ Please report suspected vulnerabilities privately to the repository maintainers 
 
 Before making a deployment public:
 
-1. Replace the `admin` / `admin` bootstrap with an environment-provided, one-time owner setup secret or identity-provider provisioning.
+1. Configure a unique 32-byte-or-longer `MDCART_BOOTSTRAP_PASSWORD` runtime secret, complete the forced first-login reset, and delete the bootstrap secret. On upgrades it also replaces a legacy forced-reset default hash. `admin` / `admin` is local-development-only.
 2. Connect transactional email for verification and invitations; do not expose verification codes in production UI or logs.
 3. Add request throttling at the edge for login, verification, invitations, checkout, and uploads.
-4. Connect a PCI-compliant hosted payment flow and signed, idempotent webhook handler. Never accept raw card data.
-5. Add image re-encoding, content scanning, strict quotas, and CDN transformation for untrusted uploads.
+4. Keep POS cash-only until a trusted server-side adapter verifies every non-cash authorization/capture and refund; connect a PCI-compliant hosted online payment flow with signed, idempotent webhooks. Never accept raw card data.
+5. Keep the built-in image type, byte-size, dimension, and pixel-count limits; add image re-encoding, content scanning, strict quotas, and CDN transformation before accepting uploads from untrusted users.
 6. Configure monitoring, backups, data-retention policies, privacy requests, and a tested migration/rollback process.
 7. If operating more than one merchant in one deployment, add tenant scoping to the schema and authorization layer first.
 8. For medicines, supplements, age-restricted goods, or other regulated products, add jurisdiction-specific authorization, labeling, professional review, shipping restrictions, and audit controls before accepting orders.

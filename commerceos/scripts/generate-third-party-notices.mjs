@@ -172,10 +172,12 @@ if (missingLicenseFiles.length > 0 || unreadablePaths.length > 0) {
   lines.push('');
 }
 
-const generated = `${lines.join('\n')}\n`;
+const generated = `${lines.join('\n')}\n`.replace(/[ \t]+$/gm, '');
 
 if (checkOnly) {
-  const current = existsSync(outputPath) ? readFileSync(outputPath, 'utf8') : '';
+  const current = existsSync(outputPath)
+    ? readFileSync(outputPath, 'utf8')
+    : '';
   if (current !== generated) {
     process.stderr.write(
       'THIRD_PARTY_NOTICES.md is out of date. Run pnpm licenses:generate.\n',
@@ -197,7 +199,9 @@ function findNoticeFiles(packagePath) {
     )
     .filter((fileName) => {
       const filePath = join(packagePath, fileName);
-      return statSync(filePath).isFile() && statSync(filePath).size <= 1024 * 1024;
+      return (
+        statSync(filePath).isFile() && statSync(filePath).size <= 1024 * 1024
+      );
     })
     .sort();
 }

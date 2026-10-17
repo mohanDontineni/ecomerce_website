@@ -1,4 +1,5 @@
 import { ADMIN_SESSION_COOKIE } from '@/lib/branding';
+import { env } from 'cloudflare:workers';
 import { audit, database, isoNow, newId } from './db';
 
 const COOKIE_NAME = ADMIN_SESSION_COOKIE;
@@ -41,7 +42,10 @@ export class AuthFailure extends Error {
 function encode(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+  return btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '');
 }
 
 function decode(value: string): Uint8Array {
@@ -65,6 +69,17 @@ async function sha256(value: string): Promise<string> {
     new TextEncoder().encode(value),
   );
   return encode(new Uint8Array(digest));
+}
+
+function constantTimeTextEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  const width = Math.max(leftBytes.length, rightBytes.length);
+  let difference = leftBytes.length ^ rightBytes.length;
+  for (let index = 0; index < width; index += 1) {
+    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return difference === 0;
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -185,7 +200,8 @@ export async function requireAdmin(
   allowedRoles: readonly string[] = ['owner', 'admin'],
 ): Promise<AdminIdentity> {
   const user = await identityFromRequest(request);
-  if (!user) throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
+  if (!user)
+    throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
   if (user.mustChangePassword) {
     throw new AuthFailure(
       428,
@@ -216,42 +232,103 @@ export async function login(
   request: Request,
 ): Promise<{ user: AdminIdentity; cookie: string }> {
   const db = database();
+  const cleanUsername = username.trim().toLowerCase();
+  const hostname = new URL(request.url).hostname.toLowerCase();
+  const localDemoEnabled =
+    ['localhost', '127.0.0.1', '[::1]', '::1'].includes(hostname) &&
+    env.MDCART_ALLOW_DEMO_BOOTSTRAP === 'true';
+  const bootstrapSecret = env.MDCART_BOOTSTRAP_PASSWORD ?? '';
+  const secretEnabled =
+    new TextEncoder().encode(bootstrapSecret).byteLength >= 32;
+  const environmentBootstrap =
+    secretEnabled && constantTimeTextEqual(password, bootstrapSecret);
   let row = await db
     .prepare(
       `SELECT id, username, email, display_name, role, status, email_verified,
               must_change_password, password_hash
        FROM users WHERE username = ? LIMIT 1`,
     )
-    .bind(username.trim().toLowerCase())
+    .bind(cleanUsername)
     .first<UserRow>();
 
-  if (!row && username.trim().toLowerCase() === 'admin' && password === 'admin') {
+  if (!row && cleanUsername === 'admin') {
+    const localDemo =
+      localDemoEnabled &&
+      constantTimeTextEqual(password, 'admin');
+    if (!localDemo && !environmentBootstrap) {
+      throw new AuthFailure(
+        401,
+        'INVALID_CREDENTIALS',
+        'Username or password is incorrect.',
+      );
+    }
     const now = isoNow();
     const id = newId('usr');
-    const passwordHash = await hashPassword('admin');
-    await db
+    const passwordHash = await hashPassword(password);
+    const inserted = await db
       .prepare(
-        `INSERT INTO users
+        `INSERT OR IGNORE INTO users
           (id, username, email, display_name, password_hash, role, status,
            email_verified, must_change_password, created_at, updated_at)
          VALUES (?, 'admin', NULL, 'Store owner', ?, 'owner', 'active', 0, 1, ?, ?)`,
       )
       .bind(id, passwordHash, now, now)
       .run();
-    row = {
-      id,
-      username: 'admin',
-      email: null,
-      display_name: 'Store owner',
-      role: 'owner',
-      status: 'active',
-      email_verified: 0,
-      must_change_password: 1,
-      password_hash: passwordHash,
-    };
-    await audit(id, 'bootstrap.owner_created', 'user', id, {
-      source: 'demo_credentials',
-    });
+    row = await db
+      .prepare(
+        `SELECT id, username, email, display_name, role, status, email_verified,
+                must_change_password, password_hash
+         FROM users WHERE username = 'admin' LIMIT 1`,
+      )
+      .first<UserRow>();
+    if (inserted.meta.changes && row) {
+      await audit(row.id, 'bootstrap.owner_created', 'user', row.id, {
+        source: localDemo
+          ? 'local_demo_credentials'
+          : 'environment_bootstrap_secret',
+      });
+    }
+  }
+
+  if (
+    row &&
+    cleanUsername === 'admin' &&
+    row.must_change_password === 1 &&
+    row.password_hash &&
+    !localDemoEnabled &&
+    (await verifyPassword('admin', row.password_hash))
+  ) {
+    if (!environmentBootstrap) {
+      throw new AuthFailure(
+        401,
+        'INVALID_CREDENTIALS',
+        'Username or password is incorrect.',
+      );
+    }
+    const legacyHash = row.password_hash;
+    const passwordHash = await hashPassword(password);
+    const now = isoNow();
+    const rotated = await db
+      .prepare(
+        `UPDATE users
+         SET password_hash = ?, updated_at = ?
+         WHERE id = ? AND must_change_password = 1 AND password_hash = ?`,
+      )
+      .bind(passwordHash, now, row.id, legacyHash)
+      .run();
+    row = await db
+      .prepare(
+        `SELECT id, username, email, display_name, role, status, email_verified,
+                must_change_password, password_hash
+         FROM users WHERE id = ? LIMIT 1`,
+      )
+      .bind(row.id)
+      .first<UserRow>();
+    if (rotated.meta.changes && row) {
+      await audit(row.id, 'bootstrap.legacy_owner_rotated', 'user', row.id, {
+        source: 'environment_bootstrap_secret',
+      });
+    }
   }
 
   if (
@@ -260,7 +337,11 @@ export async function login(
     !row.password_hash ||
     !(await verifyPassword(password, row.password_hash))
   ) {
-    throw new AuthFailure(401, 'INVALID_CREDENTIALS', 'Username or password is incorrect.');
+    throw new AuthFailure(
+      401,
+      'INVALID_CREDENTIALS',
+      'Username or password is incorrect.',
+    );
   }
 
   const rawToken = encode(randomBytes(32));
@@ -287,7 +368,8 @@ export async function resetPasswordAndStartVerification(
   email: string,
 ): Promise<{ user: AdminIdentity; demoVerificationCode: string }> {
   const user = await identityFromRequest(request);
-  if (!user) throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
+  if (!user)
+    throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
   if (
     newPassword.length < 10 ||
     !/[A-Z]/.test(newPassword) ||
@@ -314,7 +396,9 @@ export async function resetPasswordAndStartVerification(
   const currentTokenHash = await sha256(currentToken);
   const passwordHash = await hashPassword(newPassword);
   const now = isoNow();
-  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+  const code = String(
+    crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000,
+  ).padStart(6, '0');
   const codeHash = await sha256(code);
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
   await db.batch([
@@ -357,7 +441,8 @@ export async function verifyOwnerEmail(
   code: string,
 ): Promise<AdminIdentity> {
   const user = await identityFromRequest(request);
-  if (!user) throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
+  if (!user)
+    throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
   const codeHash = await sha256(code.trim());
   const db = database();
   const token = await db
@@ -370,7 +455,11 @@ export async function verifyOwnerEmail(
     .bind(user.id, codeHash, isoNow())
     .first<{ id: string }>();
   if (!token) {
-    throw new AuthFailure(400, 'INVALID_CODE', 'The verification code is invalid or expired.');
+    throw new AuthFailure(
+      400,
+      'INVALID_CODE',
+      'The verification code is invalid or expired.',
+    );
   }
   const now = isoNow();
   await db.batch([
@@ -378,7 +467,9 @@ export async function verifyOwnerEmail(
       .prepare('UPDATE verification_tokens SET consumed_at = ? WHERE id = ?')
       .bind(now, token.id),
     db
-      .prepare('UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?')
+      .prepare(
+        'UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?',
+      )
       .bind(now, user.id),
   ]);
   await audit(user.id, 'auth.email_verified', 'user', user.id);
@@ -389,7 +480,8 @@ export async function resendOwnerVerification(
   request: Request,
 ): Promise<{ demoVerificationCode: string }> {
   const user = await identityFromRequest(request);
-  if (!user) throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
+  if (!user)
+    throw new AuthFailure(401, 'UNAUTHENTICATED', 'Sign in is required.');
   if (!user.email) {
     throw new AuthFailure(
       400,
@@ -398,9 +490,15 @@ export async function resendOwnerVerification(
     );
   }
   if (user.emailVerified) {
-    throw new AuthFailure(400, 'ALREADY_VERIFIED', 'The owner email is already verified.');
+    throw new AuthFailure(
+      400,
+      'ALREADY_VERIFIED',
+      'The owner email is already verified.',
+    );
   }
-  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+  const code = String(
+    crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000,
+  ).padStart(6, '0');
   const db = database();
   const now = isoNow();
   await db.batch([
@@ -428,9 +526,7 @@ export async function resendOwnerVerification(
   return { demoVerificationCode: code };
 }
 
-export async function logout(
-  request: Request,
-): Promise<string> {
+export async function logout(request: Request): Promise<string> {
   const token = cookieToken(request);
   if (token) {
     await database()

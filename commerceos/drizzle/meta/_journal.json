@@ -36,6 +36,20 @@
       "when": 1792025201058,
       "tag": "0004_mdcart_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792248902632,
+      "tag": "0005_true_kid_colt",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792250090678,
+      "tag": "0006_kind_power_man",
+      "breakpoints": true
     }
   ]
 }

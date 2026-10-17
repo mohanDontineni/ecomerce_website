@@ -10,6 +10,10 @@ import {
   normalizeProductAttributes,
   replaceProductVariants,
 } from '@/lib/server/product-catalog';
+import {
+  DEFAULT_RETAIL_LOCATION_ID,
+  ensureRetailDefaults,
+} from '@/lib/server/retail';
 import { ensureSeedData } from '@/lib/server/seed';
 
 function slugify(value: string): string {
@@ -34,6 +38,7 @@ export async function POST(request: Request) {
   try {
     const user = await requireAdmin(request, ['owner', 'admin', 'catalog']);
     await ensureSeedData();
+    await ensureRetailDefaults();
     const body = (await request.json()) as {
       name?: string;
       description?: string;
@@ -59,7 +64,7 @@ export async function POST(request: Request) {
       body.categoryPath,
       body.category?.trim() || 'General',
     );
-    if (('options' in body) !== ('variants' in body)) {
+    if ('options' in body !== 'variants' in body) {
       return Response.json(
         {
           error: 'Options and variants must be saved together.',
@@ -85,14 +90,18 @@ export async function POST(request: Request) {
       Number(body.stock ?? 0) < 0 ||
       !Number.isSafeInteger(body.lowStockThreshold ?? 5) ||
       Number(body.lowStockThreshold ?? 5) < 0 ||
-      (body.status != null && !['draft', 'active', 'archived'].includes(body.status)) ||
+      (body.status != null &&
+        !['draft', 'active', 'archived'].includes(body.status)) ||
       (body.featured != null && typeof body.featured !== 'boolean') ||
       (body.imageUrl != null &&
         body.imageUrl !== '' &&
         (!body.imageUrl.startsWith('https://') || body.imageUrl.length > 2_000))
     ) {
       return Response.json(
-        { error: 'Product details contain an invalid value.', code: 'INVALID_INPUT' },
+        {
+          error: 'Product details contain an invalid value.',
+          code: 'INVALID_INPUT',
+        },
         { status: 400 },
       );
     }
@@ -117,7 +126,10 @@ export async function POST(request: Request) {
     const skuConflict = await findCatalogSkuConflict(sku, configuration);
     if (skuConflict) {
       return Response.json(
-        { error: `SKU ${skuConflict} is already in use.`, code: 'DUPLICATE_SKU' },
+        {
+          error: `SKU ${skuConflict} is already in use.`,
+          code: 'DUPLICATE_SKU',
+        },
         { status: 409 },
       );
     }
@@ -178,6 +190,73 @@ export async function POST(request: Request) {
         undefined,
         attributes,
       );
+      const createdVariants = await db
+        .prepare(
+          `SELECT id, stock, low_stock_threshold
+           FROM product_variants WHERE product_id = ?`,
+        )
+        .bind(id)
+        .all<{
+          id: string;
+          stock: number;
+          low_stock_threshold: number;
+        }>();
+      const inventoryStatements: D1PreparedStatement[] = [];
+      for (const variant of createdVariants.results) {
+        inventoryStatements.push(
+          db
+            .prepare(
+              `INSERT INTO location_inventory
+                (location_id, variant_id, on_hand, reserved, reorder_point,
+                 par_level, version, updated_at)
+               VALUES (?, ?, ?, 0, ?, NULL, 1, ?)`,
+            )
+            .bind(
+              DEFAULT_RETAIL_LOCATION_ID,
+              variant.id,
+              variant.stock,
+              variant.low_stock_threshold,
+              now,
+            ),
+        );
+        if (variant.stock > 0) {
+          inventoryStatements.push(
+            db
+              .prepare(
+                `INSERT INTO location_inventory_movements
+                  (id, location_id, product_id, variant_id, delta,
+                   balance_after, reason, reference_type, reference_id,
+                   external_key, unit_cost_cents, note, actor_user_id,
+                   created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 'opening_stock', 'product', ?, ?,
+                         NULL, 'Opening inventory', ?, ?)`,
+              )
+              .bind(
+                newId('lim'),
+                DEFAULT_RETAIL_LOCATION_ID,
+                id,
+                variant.id,
+                variant.stock,
+                variant.stock,
+                id,
+                `opening:${DEFAULT_RETAIL_LOCATION_ID}:${variant.id}`,
+                user.id,
+                now,
+              ),
+            db
+              .prepare(
+                `INSERT INTO inventory_movements
+                  (id, product_id, variant_id, delta, reason, note,
+                   actor_user_id, created_at)
+                 VALUES (?, ?, ?, ?, 'opening_stock', 'Opening inventory', ?, ?)`,
+              )
+              .bind(newId('mov'), id, variant.id, variant.stock, user.id, now),
+          );
+        }
+      }
+      if (inventoryStatements.length > 0) {
+        await db.batch(inventoryStatements);
+      }
     } catch (error) {
       await db.prepare('DELETE FROM products WHERE id = ?').bind(id).run();
       throw error;

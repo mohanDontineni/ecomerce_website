@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type CSSProperties } from 'react';
+import { useRef, useState, type CSSProperties } from 'react';
 import {
   ArrowLeft,
   Check,
@@ -12,7 +12,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
 import { money } from '@/lib/domain';
 import { useCart } from '@/components/storefront/cart-context';
 import { useStorePresentation } from '@/hooks/use-store-presentation';
@@ -40,47 +43,74 @@ export default function CheckoutPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const checkoutAttempt = useRef<{ signature: string; key: string } | null>(
+    null,
+  );
 
   async function submit(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
     setError('');
     const form = new FormData(event.currentTarget);
+    const payload = {
+      email: form.get('email'),
+      name: form.get('name'),
+      address: {
+        line1: form.get('line1'),
+        city: form.get('city'),
+        region: form.get('region'),
+        postalCode: form.get('postalCode'),
+        country: form.get('country'),
+      },
+      items: cart.lines.map((line) => ({
+        productId: line.productId,
+        variantId: line.variantId,
+        quantity: line.quantity,
+        expectedUnitPriceCents: line.priceCents,
+      })),
+    };
+    const signature = JSON.stringify(payload);
+    if (checkoutAttempt.current?.signature !== signature) {
+      checkoutAttempt.current = {
+        signature,
+        key: `checkout-${crypto.randomUUID()}`,
+      };
+    }
     try {
       const response = await fetch('/api/checkout', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'idempotency-key': `checkout-${crypto.randomUUID()}`,
+          'idempotency-key': checkoutAttempt.current.key,
         },
-        body: JSON.stringify({
-          email: form.get('email'),
-          name: form.get('name'),
-          address: {
-            line1: form.get('line1'),
-            city: form.get('city'),
-            region: form.get('region'),
-            postalCode: form.get('postalCode'),
-            country: form.get('country'),
-          },
-          items: cart.lines.map((line) => ({
-            productId: line.productId,
-            variantId: line.variantId,
-            quantity: line.quantity,
-            expectedUnitPriceCents: line.priceCents,
-          })),
-        }),
+        body: signature,
       });
-      const result = (await response.json()) as Confirmation & { error?: string };
-      if (!response.ok) throw new Error(result.error || 'Checkout failed.');
-      if (result.payment.status === 'requires_action' && result.payment.redirectUrl) {
+      const result = (await response.json()) as Confirmation & {
+        error?: string;
+        code?: string;
+      };
+      if (!response.ok) {
+        if (response.status < 500 && result.code !== 'CHECKOUT_IN_PROGRESS') {
+          checkoutAttempt.current = null;
+        }
+        throw new Error(result.error || 'Checkout failed.');
+      }
+      if (
+        result.payment.status === 'requires_action' &&
+        result.payment.redirectUrl
+      ) {
         window.location.assign(result.payment.redirectUrl);
         return;
       }
       setConfirmation(result);
+      checkoutAttempt.current = null;
       cart.clear();
     } catch (checkoutError) {
-      setError(checkoutError instanceof Error ? checkoutError.message : 'Checkout failed.');
+      setError(
+        checkoutError instanceof Error
+          ? checkoutError.message
+          : 'Checkout failed.',
+      );
     } finally {
       setLoading(false);
     }
@@ -89,11 +119,19 @@ export default function CheckoutPage() {
   if (confirmation) {
     return (
       <main className="checkout-confirmation" style={themeStyle}>
-        <div className="confirmation-mark"><Check /></div>
+        <div className="confirmation-mark">
+          <Check />
+        </div>
         <span className="kicker">
-          {confirmation.payment.status === 'authorized' ? 'Order confirmed' : 'Payment pending'}
+          {confirmation.payment.status === 'authorized'
+            ? 'Order confirmed'
+            : 'Payment pending'}
         </span>
-        <h1>{confirmation.payment.status === 'authorized' ? 'That&apos;s a wrap.' : 'One more step.'}</h1>
+        <h1>
+          {confirmation.payment.status === 'authorized'
+            ? 'That&apos;s a wrap.'
+            : 'One more step.'}
+        </h1>
         <p>
           Order <strong>{confirmation.orderNumber}</strong> was created for{' '}
           {money(confirmation.totalCents, confirmation.currency)}.
@@ -119,13 +157,21 @@ export default function CheckoutPage() {
         </Button>
         <a className="brand" href="/">
           {presentation.store.logoUrl ? (
-            <img className="brand-logo" src={presentation.store.logoUrl} alt="" />
+            <img
+              className="brand-logo"
+              src={presentation.store.logoUrl}
+              alt=""
+            />
           ) : (
-            <span className="brand-mark"><Sparkles /></span>
+            <span className="brand-mark">
+              <Sparkles />
+            </span>
           )}
           <span>{presentation.store.title}</span>
         </a>
-        <span className="secure-label"><LockKeyhole /> Secure</span>
+        <span className="secure-label">
+          <LockKeyhole /> Secure
+        </span>
       </header>
 
       <div className="checkout-grid">
@@ -138,11 +184,22 @@ export default function CheckoutPage() {
             <div className="form-grid two">
               <div>
                 <Label htmlFor="checkout-name">Full name</Label>
-                <Input id="checkout-name" name="name" autoComplete="name" required />
+                <Input
+                  id="checkout-name"
+                  name="name"
+                  autoComplete="name"
+                  required
+                />
               </div>
               <div>
                 <Label htmlFor="checkout-email">Email</Label>
-                <Input id="checkout-email" name="email" type="email" autoComplete="email" required />
+                <Input
+                  id="checkout-email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                />
               </div>
             </div>
           </fieldset>
@@ -152,28 +209,55 @@ export default function CheckoutPage() {
             <div className="form-grid">
               <div>
                 <Label htmlFor="checkout-line1">Street address</Label>
-                <Input id="checkout-line1" name="line1" autoComplete="address-line1" required />
+                <Input
+                  id="checkout-line1"
+                  name="line1"
+                  autoComplete="address-line1"
+                  required
+                />
               </div>
               <div className="form-grid three">
                 <div>
                   <Label htmlFor="checkout-city">City</Label>
-                  <Input id="checkout-city" name="city" autoComplete="address-level2" required />
+                  <Input
+                    id="checkout-city"
+                    name="city"
+                    autoComplete="address-level2"
+                    required
+                  />
                 </div>
                 <div>
                   <Label htmlFor="checkout-region">State / region</Label>
-                  <Input id="checkout-region" name="region" autoComplete="address-level1" />
+                  <Input
+                    id="checkout-region"
+                    name="region"
+                    autoComplete="address-level1"
+                  />
                 </div>
                 <div>
                   <Label htmlFor="checkout-postal">Postal code</Label>
-                  <Input id="checkout-postal" name="postalCode" autoComplete="postal-code" />
+                  <Input
+                    id="checkout-postal"
+                    name="postalCode"
+                    autoComplete="postal-code"
+                  />
                 </div>
               </div>
               <div>
                 <Label htmlFor="checkout-country">Country</Label>
-                <NativeSelect id="checkout-country" name="country" className="w-full" required>
-                  <NativeSelectOption value="US">United States</NativeSelectOption>
+                <NativeSelect
+                  id="checkout-country"
+                  name="country"
+                  className="w-full"
+                  required
+                >
+                  <NativeSelectOption value="US">
+                    United States
+                  </NativeSelectOption>
                   <NativeSelectOption value="CA">Canada</NativeSelectOption>
-                  <NativeSelectOption value="GB">United Kingdom</NativeSelectOption>
+                  <NativeSelectOption value="GB">
+                    United Kingdom
+                  </NativeSelectOption>
                   <NativeSelectOption value="AU">Australia</NativeSelectOption>
                 </NativeSelect>
               </div>
@@ -186,20 +270,32 @@ export default function CheckoutPage() {
               <CreditCard />
               <div>
                 <strong>Mock provider connected</strong>
-                <span>No card details are requested or stored in this starter.</span>
+                <span>
+                  No card details are requested or stored in this starter.
+                </span>
               </div>
               <span>READY</span>
             </div>
           </fieldset>
 
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <Button size="lg" className="place-order" type="submit" disabled={loading || !cart.lines.length}>
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
+          <Button
+            size="lg"
+            className="place-order"
+            type="submit"
+            disabled={loading || !cart.lines.length}
+          >
             {loading
               ? 'Placing order…'
               : `Place order · ${money(cart.subtotalCents, storeCurrency)}`}
           </Button>
           <p className="checkout-legal">
-            By placing this order you agree to the store&apos;s checkout and return policies.
+            By placing this order you agree to the store&apos;s checkout and
+            return policies.
           </p>
         </form>
 
@@ -212,8 +308,13 @@ export default function CheckoutPage() {
                   <img src={line.imageUrl} alt="" />
                   <span>{line.quantity}</span>
                 </div>
-                <p><strong>{line.name}</strong><span>{line.optionSummary || line.sku}</span></p>
-                <strong>{money(line.priceCents * line.quantity, storeCurrency)}</strong>
+                <p>
+                  <strong>{line.name}</strong>
+                  <span>{line.optionSummary || line.sku}</span>
+                </p>
+                <strong>
+                  {money(line.priceCents * line.quantity, storeCurrency)}
+                </strong>
               </article>
             ))}
           </div>
@@ -225,9 +326,18 @@ export default function CheckoutPage() {
             </div>
           )}
           <div className="checkout-totals">
-            <div><span>Subtotal</span><strong>{money(cart.subtotalCents, storeCurrency)}</strong></div>
-            <div><span>Shipping</span><span>Complimentary</span></div>
-            <div className="summary-total"><span>Total</span><strong>{money(cart.subtotalCents, storeCurrency)}</strong></div>
+            <div>
+              <span>Subtotal</span>
+              <strong>{money(cart.subtotalCents, storeCurrency)}</strong>
+            </div>
+            <div>
+              <span>Shipping</span>
+              <span>Complimentary</span>
+            </div>
+            <div className="summary-total">
+              <span>Total</span>
+              <strong>{money(cart.subtotalCents, storeCurrency)}</strong>
+            </div>
           </div>
         </aside>
       </div>

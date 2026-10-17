@@ -3,6 +3,7 @@ import { audit, database, isoNow, newId, objectStore } from '@/lib/server/db';
 import {
   CatalogInputError,
   CatalogStaleError,
+  catalogOptionSignature,
   ensureCategoryPath,
   findCatalogSkuConflict,
   normalizeCatalogConfiguration,
@@ -32,7 +33,7 @@ export async function PATCH(
     const user = await requireAdmin(request, ['owner', 'admin', 'catalog']);
     const { id } = await context.params;
     const body = (await request.json()) as Record<string, unknown>;
-    if (('options' in body) !== ('variants' in body)) {
+    if ('options' in body !== 'variants' in body) {
       return Response.json(
         {
           error: 'Options and variants must be saved together.',
@@ -76,7 +77,8 @@ export async function PATCH(
     ) {
       return Response.json(
         {
-          error: 'This product changed after you opened it. Refresh and try again.',
+          error:
+            'This product changed after you opened it. Refresh and try again.',
           code: 'STALE_PRODUCT',
         },
         { status: 409 },
@@ -96,22 +98,41 @@ export async function PATCH(
         }
         value = value ? 1 : 0;
       }
-      if (['priceCents', 'compareAtCents', 'costCents', 'lowStockThreshold'].includes(inputField)) {
+      if (
+        [
+          'priceCents',
+          'compareAtCents',
+          'costCents',
+          'lowStockThreshold',
+        ].includes(inputField)
+      ) {
         if (
-          ((inputField === 'priceCents' || inputField === 'lowStockThreshold') &&
+          ((inputField === 'priceCents' ||
+            inputField === 'lowStockThreshold') &&
             value === null) ||
-          value !== null &&
-          (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 100_000_000_000)
+          (value !== null &&
+            (!Number.isSafeInteger(value) ||
+              Number(value) < 0 ||
+              Number(value) > 100_000_000_000))
         ) {
           return Response.json(
-            { error: `${inputField} must be a non-negative integer.`, code: 'INVALID_INPUT' },
+            {
+              error: `${inputField} must be a non-negative integer.`,
+              code: 'INVALID_INPUT',
+            },
             { status: 400 },
           );
         }
       }
-      if (inputField === 'status' && !['draft', 'active', 'archived'].includes(String(value))) {
+      if (
+        inputField === 'status' &&
+        !['draft', 'active', 'archived'].includes(String(value))
+      ) {
         return Response.json(
-          { error: 'Choose a supported product status.', code: 'INVALID_INPUT' },
+          {
+            error: 'Choose a supported product status.',
+            code: 'INVALID_INPUT',
+          },
           { status: 400 },
         );
       }
@@ -123,13 +144,21 @@ export async function PATCH(
           );
         }
         const textValue = value.trim();
-        const maxLength = inputField === 'description' ? 10_000 : inputField === 'name' ? 160 : 100;
+        const maxLength =
+          inputField === 'description'
+            ? 10_000
+            : inputField === 'name'
+              ? 160
+              : 100;
         if (
           textValue.length > maxLength ||
           (inputField !== 'description' && !textValue)
         ) {
           return Response.json(
-            { error: `${inputField} is empty or too long.`, code: 'INVALID_INPUT' },
+            {
+              error: `${inputField} is empty or too long.`,
+              code: 'INVALID_INPUT',
+            },
             { status: 400 },
           );
         }
@@ -139,7 +168,10 @@ export async function PATCH(
         const sku = value.toUpperCase();
         if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(sku)) {
           return Response.json(
-            { error: 'SKU contains unsupported characters.', code: 'INVALID_INPUT' },
+            {
+              error: 'SKU contains unsupported characters.',
+              code: 'INVALID_INPUT',
+            },
             { status: 400 },
           );
         }
@@ -151,7 +183,10 @@ export async function PATCH(
     const stock = 'stock' in body ? Number(body.stock) : current.stock;
     if (!Number.isSafeInteger(stock) || stock < 0 || stock > 10_000_000) {
       return Response.json(
-        { error: 'Stock must be a non-negative whole number.', code: 'INVALID_INPUT' },
+        {
+          error: 'Stock must be a non-negative whole number.',
+          code: 'INVALID_INPUT',
+        },
         { status: 400 },
       );
     }
@@ -170,7 +205,8 @@ export async function PATCH(
     if ('stock' in body && !('options' in body || 'variants' in body)) {
       return Response.json(
         {
-          error: 'Adjust stock for a specific variant, or save the complete variant matrix.',
+          error:
+            'Adjust stock for a specific variant, or save the complete variant matrix.',
           code: 'VARIANT_REQUIRED',
         },
         { status: 400 },
@@ -187,15 +223,22 @@ export async function PATCH(
     }
 
     const baseValues = {
-      sku: typeof body.sku === 'string' ? body.sku.trim().toUpperCase() : current.sku,
+      sku:
+        typeof body.sku === 'string'
+          ? body.sku.trim().toUpperCase()
+          : current.sku,
       priceCents:
-        typeof body.priceCents === 'number' ? body.priceCents : current.price_cents,
+        typeof body.priceCents === 'number'
+          ? body.priceCents
+          : current.price_cents,
       compareAtCents:
         'compareAtCents' in body
           ? (body.compareAtCents as number | null)
           : current.compare_at_cents,
       costCents:
-        'costCents' in body ? (body.costCents as number | null) : current.cost_cents,
+        'costCents' in body
+          ? (body.costCents as number | null)
+          : current.cost_cents,
       stock,
       lowStockThreshold:
         typeof body.lowStockThreshold === 'number'
@@ -207,8 +250,58 @@ export async function PATCH(
         ? normalizeCatalogConfiguration(body.options, body.variants, baseValues)
         : undefined;
     const attributes =
-      'attributes' in body ? normalizeProductAttributes(body.attributes) : undefined;
+      'attributes' in body
+        ? normalizeProductAttributes(body.attributes)
+        : undefined;
     if (configuration) {
+      const currentVariants = await db
+        .prepare(
+          `SELECT id, sku, option_signature, stock
+           FROM product_variants
+           WHERE product_id = ?`,
+        )
+        .bind(id)
+        .all<{
+          id: string;
+          sku: string;
+          option_signature: string;
+          stock: number;
+        }>();
+      const byId = new Map(
+        currentVariants.results.map((variant) => [variant.id, variant]),
+      );
+      const bySku = new Map(
+        currentVariants.results.map((variant) => [variant.sku, variant]),
+      );
+      const bySignature = new Map(
+        currentVariants.results.map((variant) => [
+          variant.option_signature,
+          variant,
+        ]),
+      );
+      const inventoryChanged = configuration.variants.some((variant) => {
+        const signature = catalogOptionSignature(
+          configuration.options,
+          variant.optionValues,
+        );
+        const existing =
+          (variant.id ? byId.get(variant.id) : undefined) ??
+          bySignature.get(signature) ??
+          bySku.get(variant.sku);
+        return existing
+          ? variant.stock !== existing.stock
+          : variant.stock !== 0;
+      });
+      if (inventoryChanged) {
+        return Response.json(
+          {
+            error:
+              'Existing-product stock is managed per location in Retail operations. Save new variants at zero, then receive or adjust their inventory.',
+            code: 'LOCATION_INVENTORY_REQUIRED',
+          },
+          { status: 409 },
+        );
+      }
       const skuConflict = await findCatalogSkuConflict(
         baseValues.sku,
         configuration,
@@ -216,7 +309,10 @@ export async function PATCH(
       );
       if (skuConflict) {
         return Response.json(
-          { error: `SKU ${skuConflict} is already in use.`, code: 'DUPLICATE_SKU' },
+          {
+            error: `SKU ${skuConflict} is already in use.`,
+            code: 'DUPLICATE_SKU',
+          },
           { status: 409 },
         );
       }
@@ -225,7 +321,8 @@ export async function PATCH(
     if (categoryPath) {
       leafCategory = await ensureCategoryPath(categoryPath, now);
       const categoryAssignment = assignments.indexOf('category = ?');
-      if (categoryAssignment >= 0) values[categoryAssignment] = leafCategory.name;
+      if (categoryAssignment >= 0)
+        values[categoryAssignment] = leafCategory.name;
       else {
         assignments.push('category = ?');
         values.push(leafCategory.name);
@@ -233,12 +330,19 @@ export async function PATCH(
     }
 
     if (configuration) {
-      await replaceProductVariants(id, configuration, baseValues, now, {
-        assignments,
-        values,
-        categoryId: leafCategory?.id,
-        expectedUpdatedAt: body.expectedUpdatedAt,
-      }, attributes);
+      await replaceProductVariants(
+        id,
+        configuration,
+        baseValues,
+        now,
+        {
+          assignments,
+          values,
+          categoryId: leafCategory?.id,
+          expectedUpdatedAt: body.expectedUpdatedAt,
+        },
+        attributes,
+      );
     } else {
       const statements: D1PreparedStatement[] = [];
       if (assignments.length > 0 || attributes) {
@@ -294,7 +398,14 @@ export async function PATCH(
                      SELECT 1 FROM products WHERE id = ? AND updated_at = ?
                    )`,
               )
-              .bind(baseValues.sku, baseValues.lowStockThreshold, revision, id, id, revision),
+              .bind(
+                baseValues.sku,
+                baseValues.lowStockThreshold,
+                revision,
+                id,
+                id,
+                revision,
+              ),
           );
         }
         if (attributes) {
@@ -342,11 +453,7 @@ export async function PATCH(
                      SELECT 1 FROM products WHERE id = ? AND updated_at = ?
                    )`,
                 )
-                .bind(
-                  JSON.stringify(attributeRows),
-                  id,
-                  revision,
-                ),
+                .bind(JSON.stringify(attributeRows), id, revision),
             );
           }
         }
@@ -354,7 +461,9 @@ export async function PATCH(
       if (statements.length > 0) {
         const results = await db.batch(statements);
         if (!results[0].meta.changes) {
-          throw new CatalogStaleError('This product changed after you opened it.');
+          throw new CatalogStaleError(
+            'This product changed after you opened it.',
+          );
         }
       }
     }
@@ -368,7 +477,10 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof CatalogStaleError) {
       return Response.json(
-        { error: `${error.message} Refresh and try again.`, code: 'STALE_PRODUCT' },
+        {
+          error: `${error.message} Refresh and try again.`,
+          code: 'STALE_PRODUCT',
+        },
         { status: 409 },
       );
     }
@@ -383,7 +495,10 @@ export async function PATCH(
       error.message.toLocaleLowerCase().includes('unique constraint')
     ) {
       return Response.json(
-        { error: 'A product or variant SKU is already in use.', code: 'DUPLICATE_SKU' },
+        {
+          error: 'A product or variant SKU is already in use.',
+          code: 'DUPLICATE_SKU',
+        },
         { status: 409 },
       );
     }
@@ -398,7 +513,8 @@ export async function DELETE(
   try {
     const user = await requireAdmin(request, ['owner', 'admin', 'catalog']);
     const { id } = await context.params;
-    const permanent = new URL(request.url).searchParams.get('permanent') === 'true';
+    const permanent =
+      new URL(request.url).searchParams.get('permanent') === 'true';
     const db = database();
     const product = await db
       .prepare('SELECT name FROM products WHERE id = ? LIMIT 1')
@@ -413,14 +529,39 @@ export async function DELETE(
 
     if (permanent) {
       const orderReference = await db
-        .prepare('SELECT COUNT(*) AS count FROM order_items WHERE product_id = ?')
+        .prepare(
+          'SELECT COUNT(*) AS count FROM order_items WHERE product_id = ?',
+        )
         .bind(id)
         .first<{ count: number }>();
       if ((orderReference?.count ?? 0) > 0) {
         return Response.json(
           {
-            error: 'This product belongs to an order and must be archived instead.',
+            error:
+              'This product belongs to an order and must be archived instead.',
             code: 'PRODUCT_HAS_ORDERS',
+          },
+          { status: 409 },
+        );
+      }
+      const retailReference = await db
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM retail_sale_items WHERE product_id = ?) +
+             (SELECT COUNT(*) FROM purchase_order_items poi
+              JOIN product_variants pv ON pv.id = poi.variant_id
+              WHERE pv.product_id = ?) +
+             (SELECT COUNT(*) FROM location_inventory_movements
+              WHERE product_id = ?) AS count`,
+        )
+        .bind(id, id, id)
+        .first<{ count: number }>();
+      if ((retailReference?.count ?? 0) > 0) {
+        return Response.json(
+          {
+            error:
+              'This product belongs to retail sales, purchasing, or inventory history and must be archived instead.',
+            code: 'PRODUCT_HAS_RETAIL_HISTORY',
           },
           { status: 409 },
         );
@@ -434,7 +575,15 @@ export async function DELETE(
         .map((image) => image.object_key)
         .filter((key): key is string => Boolean(key));
       const deletedAt = isoNow();
-      const [deleteResult] = await db.batch([
+      const [, deleteResult] = await db.batch([
+        db
+          .prepare(
+            `DELETE FROM location_inventory
+             WHERE variant_id IN (
+               SELECT id FROM product_variants WHERE product_id = ?
+             )`,
+          )
+          .bind(id),
         db.prepare('DELETE FROM products WHERE id = ?').bind(id),
         db
           .prepare(
@@ -464,7 +613,9 @@ export async function DELETE(
           const cleanup = await Promise.allSettled(
             objectKeys.map((key) => bucket.delete(key)),
           );
-          mediaCleanupPending = cleanup.some((result) => result.status === 'rejected');
+          mediaCleanupPending = cleanup.some(
+            (result) => result.status === 'rejected',
+          );
         } catch (error) {
           mediaCleanupPending = true;
           console.error('Product media cleanup failed.', error);

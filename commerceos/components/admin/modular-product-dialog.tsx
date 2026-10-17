@@ -100,7 +100,8 @@ function optionDraftError(options: OptionDraft[]): string | null {
   if (
     activeOptions.some(
       (option) =>
-        option.values.length > 30 || option.values.some((value) => value.length > 40),
+        option.values.length > 30 ||
+        option.values.some((value) => value.length > 40),
     )
   ) {
     return 'Each option supports 1–30 values, up to 40 characters each.';
@@ -122,21 +123,30 @@ function skuPart(value: string): string {
     .slice(0, 16);
 }
 
-function generatedSku(baseSku: string, values: string[], index: number): string {
+function generatedSku(
+  baseSku: string,
+  values: string[],
+  index: number,
+): string {
   const optionSuffix = values.map(skuPart).filter(Boolean).join('-') || 'VAR';
   const ordinal = (index + 1).toString(36).toUpperCase().padStart(2, '0');
   const suffix = `${optionSuffix}-${ordinal}`;
-  const normalizedBase = (baseSku || 'SKU')
-    .toUpperCase()
-    .replace(/[^A-Z0-9._-]+/g, '-')
-    .replace(/(^-|-$)/g, '') || 'SKU';
+  const normalizedBase =
+    (baseSku || 'SKU')
+      .toUpperCase()
+      .replace(/[^A-Z0-9._-]+/g, '-')
+      .replace(/(^-|-$)/g, '') || 'SKU';
   const availableBaseLength = Math.max(2, 64 - suffix.length - 1);
-  return `${normalizedBase.slice(0, availableBaseLength)}-${suffix}`.slice(0, 64);
+  return `${normalizedBase.slice(0, availableBaseLength)}-${suffix}`.slice(
+    0,
+    64,
+  );
 }
 
 function combinations(valueGroups: string[][]): string[][] {
   return valueGroups.reduce<string[][]>(
-    (rows, values) => rows.flatMap((row) => values.map((value) => [...row, value])),
+    (rows, values) =>
+      rows.flatMap((row) => values.map((value) => [...row, value])),
     [[]],
   );
 }
@@ -145,8 +155,13 @@ function pathKey(values: string[]): string {
   return values.map((value) => value.toLocaleLowerCase()).join('\u0000');
 }
 
-function findNode(nodes: CategoryNode[], name: string): CategoryNode | undefined {
-  return nodes.find((node) => node.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+function findNode(
+  nodes: CategoryNode[],
+  name: string,
+): CategoryNode | undefined {
+  return nodes.find(
+    (node) => node.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+  );
 }
 
 export function ModularProductDialog({
@@ -191,7 +206,11 @@ export function ModularProductDialog({
     setBaseSku(product?.sku ?? '');
     setBasePrice(product ? String(product.priceCents / 100) : '');
     setSimpleStock(
-      String(product?.variants.find((variant) => variant.isDefault)?.stock ?? product?.stock ?? 0),
+      String(
+        product?.variants.find((variant) => variant.isDefault)?.stock ??
+          product?.stock ??
+          0,
+      ),
     );
     setThreshold(String(product?.lowStockThreshold ?? 5));
     const configurable = Boolean(product?.options.length);
@@ -211,7 +230,7 @@ export function ModularProductDialog({
     );
     setVariantRows(
       configurable
-          ? (product?.variants ?? [])
+        ? (product?.variants ?? [])
             .filter(
               (variant) =>
                 !variant.isDefault &&
@@ -250,7 +269,8 @@ export function ModularProductDialog({
     () => findNode(categories, department),
     [categories, department],
   );
-  const categoryNodes = departmentNode?.children ?? categories.flatMap((node) => node.children);
+  const categoryNodes =
+    departmentNode?.children ?? categories.flatMap((node) => node.children);
   const categoryNode = useMemo(
     () => findNode(categoryNodes, category),
     [categoryNodes, category],
@@ -262,13 +282,15 @@ export function ModularProductDialog({
     [productTypeNodes, productType],
   );
   const subcategoryNodes =
-    productTypeNode?.children ?? productTypeNodes.flatMap((node) => node.children);
+    productTypeNode?.children ??
+    productTypeNodes.flatMap((node) => node.children);
   const subcategoryNode = useMemo(
     () => findNode(subcategoryNodes, subcategory),
     [subcategoryNodes, subcategory],
   );
   const catalogLeafNodes =
-    subcategoryNode?.children ?? subcategoryNodes.flatMap((node) => node.children);
+    subcategoryNode?.children ??
+    subcategoryNodes.flatMap((node) => node.children);
   const selectedTemplate =
     PRODUCT_TEMPLATES.find((template) => template.id === templateId) ??
     DEFAULT_PRODUCT_TEMPLATE;
@@ -277,14 +299,22 @@ export function ModularProductDialog({
     const template =
       PRODUCT_TEMPLATES.find((candidate) => candidate.id === nextId) ??
       DEFAULT_PRODUCT_TEMPLATE;
-    const [nextDepartment = '', nextCategory = '', nextProductType = '', nextSubcategory = '', nextCatalogLeaf = ''] = template.categoryPath;
+    const [
+      nextDepartment = '',
+      nextCategory = '',
+      nextProductType = '',
+      nextSubcategory = '',
+      nextCatalogLeaf = '',
+    ] = template.categoryPath;
     setTemplateId(template.id);
     setDepartment(nextDepartment);
     setCategory(nextCategory);
     setProductType(nextProductType);
     setSubcategory(nextSubcategory);
     setCatalogLeaf(nextCatalogLeaf);
-    setHasOptions(template.options.some((item) => listValues(item.values).length > 0));
+    setHasOptions(
+      template.options.some((item) => listValues(item.values).length > 0),
+    );
     setOptionOneName(template.options[0]?.name ?? 'Option');
     setOptionOneValues(template.options[0]?.values ?? '');
     setOptionTwoName(template.options[1]?.name ?? '');
@@ -315,7 +345,9 @@ export function ModularProductDialog({
       setError('This creates more than 100 variants. Use fewer option values.');
       return;
     }
-    const existing = new Map(variantRows.map((row) => [pathKey(row.optionValues), row]));
+    const existing = new Map(
+      variantRows.map((row) => [pathKey(row.optionValues), row]),
+    );
     const nextRows: VariantDraft[] = nextCombinations.map((values, index) => {
       const saved = existing.get(pathKey(values));
       return (
@@ -330,7 +362,9 @@ export function ModularProductDialog({
     });
     if (new Set(nextRows.map((row) => row.sku)).size !== nextRows.length) {
       setVariantRows(nextRows);
-      setError('Generated SKUs are not unique. Shorten the option values or edit the SKUs.');
+      setError(
+        'Generated SKUs are not unique. Shorten the option values or edit the SKUs.',
+      );
       return;
     }
     setVariantRows(nextRows);
@@ -359,7 +393,9 @@ export function ModularProductDialog({
       ? options.reduce((count, option) => count * option.values.length, 1)
       : 0;
     const expectedVariantKeys = new Set(
-      hasOptions ? combinations(options.map((option) => option.values)).map(pathKey) : [],
+      hasOptions
+        ? combinations(options.map((option) => option.values)).map(pathKey)
+        : [],
     );
     if (
       hasOptions &&
@@ -367,16 +403,20 @@ export function ModularProductDialog({
         options.some((option) => !option.name) ||
         expectedVariants === 0 ||
         variantRows.length !== expectedVariants ||
-        variantRows.some((variant) => !expectedVariantKeys.has(pathKey(variant.optionValues))))
+        variantRows.some(
+          (variant) => !expectedVariantKeys.has(pathKey(variant.optionValues)),
+        ))
     ) {
       setSaving(false);
-      setError('Option values changed. Generate all combinations again before saving.');
+      setError(
+        'Option values changed. Generate all combinations again before saving.',
+      );
       return;
     }
     if (
       hasOptions &&
-      new Set(variantRows.map((variant) => variant.sku.trim().toUpperCase())).size !==
-        variantRows.length
+      new Set(variantRows.map((variant) => variant.sku.trim().toUpperCase()))
+        .size !== variantRows.length
     ) {
       setSaving(false);
       setError('Every variant needs a unique SKU.');
@@ -401,7 +441,13 @@ export function ModularProductDialog({
     const payload = {
       name: formText(form, 'name'),
       description: formText(form, 'description'),
-      categoryPath: [department, category, productType, subcategory, catalogLeaf]
+      categoryPath: [
+        department,
+        category,
+        productType,
+        subcategory,
+        catalogLeaf,
+      ]
         .map((value) => value.trim())
         .filter(Boolean),
       sku: baseSku,
@@ -409,7 +455,9 @@ export function ModularProductDialog({
       compareAtCents: form.get('compareAt')
         ? Math.round(Number(form.get('compareAt')) * 100)
         : null,
-      costCents: form.get('cost') ? Math.round(Number(form.get('cost')) * 100) : null,
+      costCents: form.get('cost')
+        ? Math.round(Number(form.get('cost')) * 100)
+        : null,
       stock: Math.max(0, Math.trunc(Number(simpleStock || 0))),
       lowStockThreshold: Math.max(0, Math.trunc(Number(threshold || 0))),
       status: formText(form, 'status'),
@@ -424,7 +472,9 @@ export function ModularProductDialog({
             optionValues: variant.optionValues,
             sku: variant.sku,
             priceCents:
-              variant.price.trim() === '' ? null : Math.round(Number(variant.price) * 100),
+              variant.price.trim() === ''
+                ? null
+                : Math.round(Number(variant.price) * 100),
             compareAtCents: null,
             costCents: null,
             stock: Math.max(0, Math.trunc(Number(variant.stock || 0))),
@@ -434,17 +484,26 @@ export function ModularProductDialog({
         : [],
     };
     try {
-      const response = await fetch(product ? `/api/products/${product.id}` : '/api/products', {
-        method: product ? 'PATCH' : 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const result = (await response.json()) as { productId?: string; error?: string };
-      if (!response.ok) throw new Error(result.error || 'Product could not be saved.');
+      const response = await fetch(
+        product ? `/api/products/${product.id}` : '/api/products',
+        {
+          method: product ? 'PATCH' : 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+      );
+      const result = (await response.json()) as {
+        productId?: string;
+        error?: string;
+      };
+      if (!response.ok)
+        throw new Error(result.error || 'Product could not be saved.');
       const productId = product?.id ?? result.productId;
       const files = form
         .getAll('images')
-        .filter((value): value is File => value instanceof File && value.size > 0);
+        .filter(
+          (value): value is File => value instanceof File && value.size > 0,
+        );
       if (productId) {
         for (const file of files) {
           const imageForm = new FormData();
@@ -456,13 +515,19 @@ export function ModularProductDialog({
           });
           if (!upload.ok) {
             const uploadError = (await upload.json()) as { error?: string };
-            throw new Error(uploadError.error || 'One image could not be uploaded.');
+            throw new Error(
+              uploadError.error || 'One image could not be uploaded.',
+            );
           }
         }
       }
       await onSaved(product ? 'Product updated.' : 'Product created.');
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Product could not be saved.');
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : 'Product could not be saved.',
+      );
     } finally {
       setSaving(false);
     }
@@ -474,7 +539,8 @@ export function ModularProductDialog({
       `/api/products/${product.id}/images?imageId=${encodeURIComponent(imageId)}`,
       { method: 'DELETE' },
     );
-    if (response.ok) showNotice('Image removed. Reopen the product to refresh the gallery.');
+    if (response.ok)
+      showNotice('Image removed. Reopen the product to refresh the gallery.');
     else showNotice('Could not remove that image.');
   }
 
@@ -482,21 +548,29 @@ export function ModularProductDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="product-dialog modular-product-dialog sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle>{product ? 'Edit product' : 'Create product'}</DialogTitle>
+          <DialogTitle>
+            {product ? 'Edit product' : 'Create product'}
+          </DialogTitle>
           <DialogDescription>
-            Organize the catalog, build sellable variants, set inventory, and add a gallery.
+            Organize the catalog, build sellable variants, set inventory, and
+            add a gallery.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit}>
           <section className="product-form-section">
             <div className="product-form-section-heading">
               <span>1</span>
-              <div><strong>Product details</strong><small>The shared information customers see.</small></div>
+              <div>
+                <strong>Product details</strong>
+                <small>The shared information customers see.</small>
+              </div>
             </div>
             <div className="product-form-grid">
               {!product && (
                 <div className="form-span-2 product-template-picker">
-                  <Label htmlFor="product-template">Retail / product template ({PRODUCT_TEMPLATES.length} types)</Label>
+                  <Label htmlFor="product-template">
+                    Retail / product template ({PRODUCT_TEMPLATES.length} types)
+                  </Label>
                   <div className="product-template-controls">
                     <NativeSelect
                       id="product-template"
@@ -505,16 +579,27 @@ export function ModularProductDialog({
                       onChange={(event) => setTemplateId(event.target.value)}
                     >
                       {PRODUCT_TEMPLATE_GROUPS.map((group) => (
-                        <NativeSelectOptGroup key={group.id} label={group.label}>
-                          {PRODUCT_TEMPLATES.filter((template) => template.groupId === group.id).map((template) => (
-                            <NativeSelectOption key={template.id} value={template.id}>
+                        <NativeSelectOptGroup
+                          key={group.id}
+                          label={group.label}
+                        >
+                          {PRODUCT_TEMPLATES.filter(
+                            (template) => template.groupId === group.id,
+                          ).map((template) => (
+                            <NativeSelectOption
+                              key={template.id}
+                              value={template.id}
+                            >
                               {template.label}
                             </NativeSelectOption>
                           ))}
                         </NativeSelectOptGroup>
                       ))}
                     </NativeSelect>
-                    <Button type="button" onClick={() => applyTemplate(templateId)}>
+                    <Button
+                      type="button"
+                      onClick={() => applyTemplate(templateId)}
+                    >
                       <Sparkles /> Apply template
                     </Button>
                   </div>
@@ -523,7 +608,8 @@ export function ModularProductDialog({
                     {selectedTemplate.categoryPath.length > 0
                       ? ` Suggested path: ${selectedTemplate.categoryPath.join(' → ')}.`
                       : ''}{' '}
-                    Apply template to replace the current category, option, and specification drafts. Every copied field stays editable.
+                    Apply template to replace the current category, option, and
+                    specification drafts. Every copied field stays editable.
                     {selectedTemplate.complianceNote
                       ? ` Important: ${selectedTemplate.complianceNote}`
                       : ''}
@@ -532,11 +618,21 @@ export function ModularProductDialog({
               )}
               <div className="form-span-2">
                 <Label htmlFor="product-name">Title</Label>
-                <Input id="product-name" name="name" defaultValue={product?.name} required />
+                <Input
+                  id="product-name"
+                  name="name"
+                  defaultValue={product?.name}
+                  required
+                />
               </div>
               <div className="form-span-2">
                 <Label htmlFor="product-description">Description</Label>
-                <Textarea id="product-description" name="description" defaultValue={product?.description} rows={4} />
+                <Textarea
+                  id="product-description"
+                  name="description"
+                  defaultValue={product?.description}
+                  rows={4}
+                />
               </div>
             </div>
           </section>
@@ -544,78 +640,219 @@ export function ModularProductDialog({
           <section className="product-form-section">
             <div className="product-form-section-heading">
               <span>2</span>
-              <div><strong>Catalog organization</strong><small>Create any hierarchy—from audience and department to category and product type.</small></div>
+              <div>
+                <strong>Catalog organization</strong>
+                <small>
+                  Create any hierarchy—from audience and department to category
+                  and product type.
+                </small>
+              </div>
             </div>
             <div className="catalog-path-grid">
               <div>
                 <Label htmlFor="product-department">Department</Label>
-                <Input id="product-department" list="department-suggestions" value={department} onChange={(event) => { setDepartment(event.target.value); setCategory(''); setProductType(''); setSubcategory(''); setCatalogLeaf(''); }} placeholder="Women, Jewelry, Health…" maxLength={80} required />
-                <datalist id="department-suggestions">{categories.map((node) => <option key={node.id} value={node.name} />)}</datalist>
+                <Input
+                  id="product-department"
+                  list="department-suggestions"
+                  value={department}
+                  onChange={(event) => {
+                    setDepartment(event.target.value);
+                    setCategory('');
+                    setProductType('');
+                    setSubcategory('');
+                    setCatalogLeaf('');
+                  }}
+                  placeholder="Women, Jewelry, Health…"
+                  maxLength={80}
+                  required
+                />
+                <datalist id="department-suggestions">
+                  {categories.map((node) => (
+                    <option key={node.id} value={node.name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <Label htmlFor="product-category">Category</Label>
-                <Input id="product-category" list="category-suggestions" value={category} onChange={(event) => { setCategory(event.target.value); setProductType(''); setSubcategory(''); setCatalogLeaf(''); }} placeholder="Apparel, Rings, Wellness…" maxLength={80} />
-                <datalist id="category-suggestions">{categoryNodes.map((node) => <option key={node.id} value={node.name} />)}</datalist>
+                <Input
+                  id="product-category"
+                  list="category-suggestions"
+                  value={category}
+                  onChange={(event) => {
+                    setCategory(event.target.value);
+                    setProductType('');
+                    setSubcategory('');
+                    setCatalogLeaf('');
+                  }}
+                  placeholder="Apparel, Rings, Wellness…"
+                  maxLength={80}
+                />
+                <datalist id="category-suggestions">
+                  {categoryNodes.map((node) => (
+                    <option key={node.id} value={node.name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <Label htmlFor="product-type">Product type</Label>
-                <Input id="product-type" list="type-suggestions" value={productType} onChange={(event) => { setProductType(event.target.value); setSubcategory(''); setCatalogLeaf(''); }} placeholder="Shirts, Sneakers, Supplements…" maxLength={80} />
-                <datalist id="type-suggestions">{productTypeNodes.map((node) => <option key={node.id} value={node.name} />)}</datalist>
+                <Input
+                  id="product-type"
+                  list="type-suggestions"
+                  value={productType}
+                  onChange={(event) => {
+                    setProductType(event.target.value);
+                    setSubcategory('');
+                    setCatalogLeaf('');
+                  }}
+                  placeholder="Shirts, Sneakers, Supplements…"
+                  maxLength={80}
+                />
+                <datalist id="type-suggestions">
+                  {productTypeNodes.map((node) => (
+                    <option key={node.id} value={node.name} />
+                  ))}
+                </datalist>
               </div>
               <div>
-                <Label htmlFor="product-subcategory">Subcategory <small>(optional)</small></Label>
-                <Input id="product-subcategory" list="subcategory-suggestions" value={subcategory} onChange={(event) => { setSubcategory(event.target.value); setCatalogLeaf(''); }} placeholder="Casual, Fine jewelry…" maxLength={80} />
-                <datalist id="subcategory-suggestions">{subcategoryNodes.map((node) => <option key={node.id} value={node.name} />)}</datalist>
+                <Label htmlFor="product-subcategory">
+                  Subcategory <small>(optional)</small>
+                </Label>
+                <Input
+                  id="product-subcategory"
+                  list="subcategory-suggestions"
+                  value={subcategory}
+                  onChange={(event) => {
+                    setSubcategory(event.target.value);
+                    setCatalogLeaf('');
+                  }}
+                  placeholder="Casual, Fine jewelry…"
+                  maxLength={80}
+                />
+                <datalist id="subcategory-suggestions">
+                  {subcategoryNodes.map((node) => (
+                    <option key={node.id} value={node.name} />
+                  ))}
+                </datalist>
               </div>
               <div>
-                <Label htmlFor="product-catalog-leaf">Collection / subtype <small>(optional)</small></Label>
-                <Input id="product-catalog-leaf" list="catalog-leaf-suggestions" value={catalogLeaf} onChange={(event) => setCatalogLeaf(event.target.value)} placeholder="Oxford, Birthstone…" maxLength={80} />
-                <datalist id="catalog-leaf-suggestions">{catalogLeafNodes.map((node) => <option key={node.id} value={node.name} />)}</datalist>
+                <Label htmlFor="product-catalog-leaf">
+                  Collection / subtype <small>(optional)</small>
+                </Label>
+                <Input
+                  id="product-catalog-leaf"
+                  list="catalog-leaf-suggestions"
+                  value={catalogLeaf}
+                  onChange={(event) => setCatalogLeaf(event.target.value)}
+                  placeholder="Oxford, Birthstone…"
+                  maxLength={80}
+                />
+                <datalist id="catalog-leaf-suggestions">
+                  {catalogLeafNodes.map((node) => (
+                    <option key={node.id} value={node.name} />
+                  ))}
+                </datalist>
               </div>
             </div>
             <div className="category-path-preview">
               <Sparkles />
-              {[department, category, productType, subcategory, catalogLeaf].filter(Boolean).join(' → ') || 'Add a department to start the catalog path'}
+              {[department, category, productType, subcategory, catalogLeaf]
+                .filter(Boolean)
+                .join(' → ') || 'Add a department to start the catalog path'}
             </div>
           </section>
 
           <section className="product-form-section">
             <div className="product-form-section-heading">
               <span>3</span>
-              <div><strong>Pricing & publishing</strong><small>The base price is used unless a variant overrides it.</small></div>
+              <div>
+                <strong>Pricing & publishing</strong>
+                <small>
+                  The base price is used unless a variant overrides it.
+                </small>
+              </div>
             </div>
             <div className="product-form-grid">
               <div>
                 <Label htmlFor="product-sku">Base SKU</Label>
-                <Input id="product-sku" value={baseSku} onChange={(event) => setBaseSku(event.target.value.toUpperCase())} placeholder="PRODUCT-001" required />
+                <Input
+                  id="product-sku"
+                  value={baseSku}
+                  onChange={(event) =>
+                    setBaseSku(event.target.value.toUpperCase())
+                  }
+                  placeholder="PRODUCT-001"
+                  required
+                />
               </div>
               <div>
                 <Label htmlFor="product-price">Base price ({currency})</Label>
-                <Input id="product-price" type="number" min="0" step="0.01" value={basePrice} onChange={(event) => setBasePrice(event.target.value)} required />
+                <Input
+                  id="product-price"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={basePrice}
+                  onChange={(event) => setBasePrice(event.target.value)}
+                  required
+                />
               </div>
               <div>
                 <Label htmlFor="product-compare-price">Compare-at price</Label>
-                <Input id="product-compare-price" name="compareAt" type="number" min="0" step="0.01" defaultValue={product?.compareAtCents ? product.compareAtCents / 100 : ''} />
+                <Input
+                  id="product-compare-price"
+                  name="compareAt"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue={
+                    product?.compareAtCents ? product.compareAtCents / 100 : ''
+                  }
+                />
               </div>
               <div>
                 <Label htmlFor="product-cost">Unit cost</Label>
-                <Input id="product-cost" name="cost" type="number" min="0" step="0.01" defaultValue={product?.costCents ? product.costCents / 100 : ''} />
+                <Input
+                  id="product-cost"
+                  name="cost"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue={
+                    product?.costCents ? product.costCents / 100 : ''
+                  }
+                />
               </div>
               <div>
                 <Label htmlFor="product-status">Publishing status</Label>
-                <NativeSelect id="product-status" name="status" className="w-full" defaultValue={product?.status ?? 'draft'}>
+                <NativeSelect
+                  id="product-status"
+                  name="status"
+                  className="w-full"
+                  defaultValue={product?.status ?? 'draft'}
+                >
                   <NativeSelectOption value="draft">Draft</NativeSelectOption>
                   <NativeSelectOption value="active">Active</NativeSelectOption>
-                  <NativeSelectOption value="archived">Archived</NativeSelectOption>
+                  <NativeSelectOption value="archived">
+                    Archived
+                  </NativeSelectOption>
                 </NativeSelect>
               </div>
               <div>
                 <Label htmlFor="low-stock-threshold">Low-stock alert at</Label>
-                <Input id="low-stock-threshold" type="number" min="0" value={threshold} onChange={(event) => setThreshold(event.target.value)} />
+                <Input
+                  id="low-stock-threshold"
+                  type="number"
+                  min="0"
+                  value={threshold}
+                  onChange={(event) => setThreshold(event.target.value)}
+                />
               </div>
               <label className="switch-field">
                 <Switch name="featured" defaultChecked={product?.featured} />
-                <span><strong>Featured product</strong><small>Show this item prominently.</small></span>
+                <span>
+                  <strong>Featured product</strong>
+                  <small>Show this item prominently.</small>
+                </span>
               </label>
             </div>
           </section>
@@ -623,60 +860,216 @@ export function ModularProductDialog({
           <section className="product-form-section">
             <div className="product-form-section-heading product-options-heading">
               <span>4</span>
-              <div><strong>Options & variants</strong><small>Track each size, color, material, or other combination separately.</small></div>
-              <Switch checked={hasOptions} onCheckedChange={setHasOptions} aria-label="Product has options" />
+              <div>
+                <strong>Options & variants</strong>
+                <small>
+                  Track each size, color, material, or other combination
+                  separately.
+                </small>
+              </div>
+              <Switch
+                checked={hasOptions}
+                onCheckedChange={setHasOptions}
+                aria-label="Product has options"
+              />
             </div>
             {hasOptions ? (
               <>
                 <div className="option-builder-grid">
                   <div>
                     <Label htmlFor="option-one-name">Option 1 name</Label>
-                    <Input id="option-one-name" value={optionOneName} onChange={(event) => setOptionOneName(event.target.value)} placeholder="Size" maxLength={40} />
+                    <Input
+                      id="option-one-name"
+                      value={optionOneName}
+                      onChange={(event) => setOptionOneName(event.target.value)}
+                      placeholder="Size"
+                      maxLength={40}
+                    />
                   </div>
                   <div>
-                    <Label htmlFor="option-one-values">Values, separated by commas</Label>
-                    <Input id="option-one-values" value={optionOneValues} onChange={(event) => setOptionOneValues(event.target.value)} placeholder="S, M, L, XL" maxLength={1229} />
+                    <Label htmlFor="option-one-values">
+                      Values, separated by commas
+                    </Label>
+                    <Input
+                      id="option-one-values"
+                      value={optionOneValues}
+                      onChange={(event) =>
+                        setOptionOneValues(event.target.value)
+                      }
+                      placeholder="S, M, L, XL"
+                      maxLength={1229}
+                    />
                   </div>
                   <div>
-                    <Label htmlFor="option-two-name">Option 2 name <small>(optional)</small></Label>
-                    <Input id="option-two-name" value={optionTwoName} onChange={(event) => setOptionTwoName(event.target.value)} placeholder="Color" maxLength={40} />
+                    <Label htmlFor="option-two-name">
+                      Option 2 name <small>(optional)</small>
+                    </Label>
+                    <Input
+                      id="option-two-name"
+                      value={optionTwoName}
+                      onChange={(event) => setOptionTwoName(event.target.value)}
+                      placeholder="Color"
+                      maxLength={40}
+                    />
                   </div>
                   <div>
-                    <Label htmlFor="option-two-values">Values, separated by commas</Label>
-                    <Input id="option-two-values" value={optionTwoValues} onChange={(event) => setOptionTwoValues(event.target.value)} placeholder="Black, White, Blue" maxLength={1229} />
+                    <Label htmlFor="option-two-values">
+                      Values, separated by commas
+                    </Label>
+                    <Input
+                      id="option-two-values"
+                      value={optionTwoValues}
+                      onChange={(event) =>
+                        setOptionTwoValues(event.target.value)
+                      }
+                      placeholder="Black, White, Blue"
+                      maxLength={1229}
+                    />
                   </div>
                   <div>
-                    <Label htmlFor="option-three-name">Option 3 name <small>(optional)</small></Label>
-                    <Input id="option-three-name" value={optionThreeName} onChange={(event) => setOptionThreeName(event.target.value)} placeholder="Material, Width, Pack size…" maxLength={40} />
+                    <Label htmlFor="option-three-name">
+                      Option 3 name <small>(optional)</small>
+                    </Label>
+                    <Input
+                      id="option-three-name"
+                      value={optionThreeName}
+                      onChange={(event) =>
+                        setOptionThreeName(event.target.value)
+                      }
+                      placeholder="Material, Width, Pack size…"
+                      maxLength={40}
+                    />
                   </div>
                   <div>
-                    <Label htmlFor="option-three-values">Values, separated by commas</Label>
-                    <Input id="option-three-values" value={optionThreeValues} onChange={(event) => setOptionThreeValues(event.target.value)} placeholder="Regular, Wide" maxLength={1229} />
+                    <Label htmlFor="option-three-values">
+                      Values, separated by commas
+                    </Label>
+                    <Input
+                      id="option-three-values"
+                      value={optionThreeValues}
+                      onChange={(event) =>
+                        setOptionThreeValues(event.target.value)
+                      }
+                      placeholder="Regular, Wide"
+                      maxLength={1229}
+                    />
                   </div>
                 </div>
                 {variantRows.length === 0 && (
-                  <p className="variant-builder-help">Add the values you sell, then generate every combination before saving.</p>
+                  <p className="variant-builder-help">
+                    Add the values you sell, then generate every combination
+                    before saving.
+                  </p>
                 )}
-                <Button type="button" variant="outline" onClick={generateVariants}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={generateVariants}
+                >
                   <RefreshCw /> Generate combinations
                 </Button>
                 {variantRows.length > 0 && (
                   <div className="variant-matrix-wrap">
                     <div className="variant-summary">
                       <strong>{variantRows.length} variants</strong>
-                      <span>{variantRows.reduce((sum, row) => sum + Number(row.stock || 0), 0)} total units</span>
+                      <span>
+                        {variantRows.reduce(
+                          (sum, row) => sum + Number(row.stock || 0),
+                          0,
+                        )}{' '}
+                        total units
+                      </span>
                     </div>
                     <div className="variant-matrix">
-                      <div className="variant-matrix-head"><span>Variant</span><span>SKU</span><span>Price</span><span>Stock</span><span>Status</span></div>
+                      <div className="variant-matrix-head">
+                        <span>Variant</span>
+                        <span>SKU</span>
+                        <span>Price</span>
+                        <span>Stock</span>
+                        <span>Status</span>
+                      </div>
                       {variantRows.map((variant, index) => (
-                        <div className="variant-matrix-row" key={pathKey(variant.optionValues)}>
+                        <div
+                          className="variant-matrix-row"
+                          key={pathKey(variant.optionValues)}
+                        >
                           <strong>{variant.optionValues.join(' / ')}</strong>
-                          <Input aria-label={`${variant.optionValues.join(' / ')} SKU`} value={variant.sku} onChange={(event) => setVariantRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, sku: event.target.value.toUpperCase() } : row))} required />
-                          <Input aria-label={`${variant.optionValues.join(' / ')} price override`} type="number" min="0" step="0.01" value={variant.price} placeholder={basePrice || 'Base price'} onChange={(event) => setVariantRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} />
-                          <Input aria-label={`${variant.optionValues.join(' / ')} stock`} type="number" min="0" step="1" value={variant.stock} onChange={(event) => setVariantRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, stock: event.target.value } : row))} required />
-                          <NativeSelect aria-label={`${variant.optionValues.join(' / ')} status`} value={variant.status} onChange={(event) => setVariantRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, status: event.target.value as 'active' | 'archived' } : row))}>
-                            <NativeSelectOption value="active">Active</NativeSelectOption>
-                            <NativeSelectOption value="archived">Archived</NativeSelectOption>
+                          <Input
+                            aria-label={`${variant.optionValues.join(' / ')} SKU`}
+                            value={variant.sku}
+                            onChange={(event) =>
+                              setVariantRows((rows) =>
+                                rows.map((row, rowIndex) =>
+                                  rowIndex === index
+                                    ? {
+                                        ...row,
+                                        sku: event.target.value.toUpperCase(),
+                                      }
+                                    : row,
+                                ),
+                              )
+                            }
+                            required
+                          />
+                          <Input
+                            aria-label={`${variant.optionValues.join(' / ')} price override`}
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={variant.price}
+                            placeholder={basePrice || 'Base price'}
+                            onChange={(event) =>
+                              setVariantRows((rows) =>
+                                rows.map((row, rowIndex) =>
+                                  rowIndex === index
+                                    ? { ...row, price: event.target.value }
+                                    : row,
+                                ),
+                              )
+                            }
+                          />
+                          <Input
+                            aria-label={`${variant.optionValues.join(' / ')} stock`}
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={variant.stock}
+                            onChange={(event) =>
+                              setVariantRows((rows) =>
+                                rows.map((row, rowIndex) =>
+                                  rowIndex === index
+                                    ? { ...row, stock: event.target.value }
+                                    : row,
+                                ),
+                              )
+                            }
+                            disabled={Boolean(product)}
+                            required
+                          />
+                          <NativeSelect
+                            aria-label={`${variant.optionValues.join(' / ')} status`}
+                            value={variant.status}
+                            onChange={(event) =>
+                              setVariantRows((rows) =>
+                                rows.map((row, rowIndex) =>
+                                  rowIndex === index
+                                    ? {
+                                        ...row,
+                                        status: event.target.value as
+                                          | 'active'
+                                          | 'archived',
+                                      }
+                                    : row,
+                                ),
+                              )
+                            }
+                          >
+                            <NativeSelectOption value="active">
+                              Active
+                            </NativeSelectOption>
+                            <NativeSelectOption value="archived">
+                              Archived
+                            </NativeSelectOption>
                           </NativeSelect>
                         </div>
                       ))}
@@ -688,9 +1081,20 @@ export function ModularProductDialog({
               <div className="simple-inventory-field">
                 <div>
                   <Label htmlFor="product-stock">Inventory</Label>
-                  <Input id="product-stock" type="number" min="0" value={simpleStock} onChange={(event) => setSimpleStock(event.target.value)} />
+                  <Input
+                    id="product-stock"
+                    type="number"
+                    min="0"
+                    value={simpleStock}
+                    onChange={(event) => setSimpleStock(event.target.value)}
+                    disabled={Boolean(product)}
+                  />
                 </div>
-                <p>This product has one default sellable SKU. Turn options on for sizes, colors, or other variations.</p>
+                <p>
+                  {product
+                    ? 'Manage stock per store or warehouse from Retail operations. Catalog edits preserve current inventory.'
+                    : 'This product has one default sellable SKU. Turn options on for sizes, colors, or other variations.'}
+                </p>
               </div>
             )}
           </section>
@@ -698,12 +1102,22 @@ export function ModularProductDialog({
           <section className="product-form-section">
             <div className="product-form-section-heading">
               <span>5</span>
-              <div><strong>Specifications</strong><small>Options create SKUs and inventory; specifications describe the product without multiplying stock.</small></div>
+              <div>
+                <strong>Specifications</strong>
+                <small>
+                  Options create SKUs and inventory; specifications describe the
+                  product without multiplying stock.
+                </small>
+              </div>
             </div>
             <div className="attribute-builder">
               {attributeRows.length > 0 && (
                 <div className="attribute-builder-head" aria-hidden="true">
-                  <span>Group</span><span>Name</span><span>Value</span><span>Storefront</span><span />
+                  <span>Group</span>
+                  <span>Name</span>
+                  <span>Value</span>
+                  <span>Storefront</span>
+                  <span />
                 </div>
               )}
               {attributeRows.map((attribute, index) => (
@@ -713,26 +1127,56 @@ export function ModularProductDialog({
                     value={attribute.groupName}
                     placeholder="Details"
                     maxLength={60}
-                    onChange={(event) => setAttributeRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, groupName: event.target.value } : row))}
+                    onChange={(event) =>
+                      setAttributeRows((rows) =>
+                        rows.map((row, rowIndex) =>
+                          rowIndex === index
+                            ? { ...row, groupName: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
                   />
                   <Input
                     aria-label={`Specification ${index + 1} name`}
                     value={attribute.name}
                     placeholder="Material, weight, brand…"
                     maxLength={80}
-                    onChange={(event) => setAttributeRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, name: event.target.value } : row))}
+                    onChange={(event) =>
+                      setAttributeRows((rows) =>
+                        rows.map((row, rowIndex) =>
+                          rowIndex === index
+                            ? { ...row, name: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
                   />
                   <Input
                     aria-label={`Specification ${index + 1} value`}
                     value={attribute.value}
                     placeholder="Enter a value"
                     maxLength={500}
-                    onChange={(event) => setAttributeRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, value: event.target.value } : row))}
+                    onChange={(event) =>
+                      setAttributeRows((rows) =>
+                        rows.map((row, rowIndex) =>
+                          rowIndex === index
+                            ? { ...row, value: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
                   />
                   <label className="attribute-visibility">
                     <Switch
                       checked={attribute.visible}
-                      onCheckedChange={(visible) => setAttributeRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, visible } : row))}
+                      onCheckedChange={(visible) =>
+                        setAttributeRows((rows) =>
+                          rows.map((row, rowIndex) =>
+                            rowIndex === index ? { ...row, visible } : row,
+                          ),
+                        )
+                      }
                       aria-label={`Show ${attribute.name || `specification ${index + 1}`} on the storefront`}
                     />
                     <span>{attribute.visible ? 'Shown' : 'Internal'}</span>
@@ -741,7 +1185,11 @@ export function ModularProductDialog({
                     type="button"
                     size="icon"
                     variant="ghost"
-                    onClick={() => setAttributeRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}
+                    onClick={() =>
+                      setAttributeRows((rows) =>
+                        rows.filter((_, rowIndex) => rowIndex !== index),
+                      )
+                    }
                     aria-label={`Remove ${attribute.name || `specification ${index + 1}`}`}
                   >
                     <Trash2 />
@@ -749,15 +1197,32 @@ export function ModularProductDialog({
                 </div>
               ))}
               {attributeRows.length === 0 && (
-                <p className="attribute-builder-empty">No specifications yet. Add only the details that matter for this product.</p>
+                <p className="attribute-builder-empty">
+                  No specifications yet. Add only the details that matter for
+                  this product.
+                </p>
               )}
               <Button
                 type="button"
                 variant="outline"
                 disabled={attributeRows.length >= 50}
-                onClick={() => setAttributeRows((rows) => [...rows, { key: crypto.randomUUID(), groupName: 'Details', name: '', value: '', visible: true }])}
+                onClick={() =>
+                  setAttributeRows((rows) => [
+                    ...rows,
+                    {
+                      key: crypto.randomUUID(),
+                      groupName: 'Details',
+                      name: '',
+                      value: '',
+                      visible: true,
+                    },
+                  ])
+                }
               >
-                <Plus /> {attributeRows.length >= 50 ? '50 specification limit' : 'Add specification'}
+                <Plus />{' '}
+                {attributeRows.length >= 50
+                  ? '50 specification limit'
+                  : 'Add specification'}
               </Button>
             </div>
           </section>
@@ -765,18 +1230,36 @@ export function ModularProductDialog({
           <section className="product-form-section">
             <div className="product-form-section-heading">
               <span>6</span>
-              <div><strong>Product gallery</strong><small>Add up to 12 customer-facing images.</small></div>
+              <div>
+                <strong>Product gallery</strong>
+                <small>Add up to 12 customer-facing images.</small>
+              </div>
             </div>
             <div className="product-form-grid">
               <div className="form-span-2">
                 <Label htmlFor="product-images">Upload product pictures</Label>
-                <Input id="product-images" name="images" type="file" accept="image/jpeg,image/png,image/webp,image/avif" multiple />
-                <small className="field-help">JPEG, PNG, WebP, or AVIF. Up to 10 MB each.</small>
+                <Input
+                  id="product-images"
+                  name="images"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/avif"
+                  multiple
+                />
+                <small className="field-help">
+                  JPEG, PNG, WebP, or AVIF. Up to 10 MB each.
+                </small>
               </div>
               {!product && (
                 <div className="form-span-2">
-                  <Label htmlFor="product-image-url">Or start with a remote HTTPS image</Label>
-                  <Input id="product-image-url" name="imageUrl" type="url" placeholder="https://…" />
+                  <Label htmlFor="product-image-url">
+                    Or start with a remote HTTPS image
+                  </Label>
+                  <Input
+                    id="product-image-url"
+                    name="imageUrl"
+                    type="url"
+                    placeholder="https://…"
+                  />
                 </div>
               )}
             </div>
@@ -785,16 +1268,34 @@ export function ModularProductDialog({
                 {product.images.map((image) => (
                   <div key={image.id}>
                     <img src={image.url} alt={image.alt} />
-                    <Button type="button" size="icon-xs" variant="destructive" onClick={() => void removeImage(image.id)} aria-label="Remove image"><X /></Button>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="destructive"
+                      onClick={() => void removeImage(image.id)}
+                      aria-label="Remove image"
+                    >
+                      <X />
+                    </Button>
                   </div>
                 ))}
               </div>
             ) : null}
           </section>
 
-          {error && <p className="form-error" role="alert">{error}</p>}
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
           <DialogFooter className="product-form-footer">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
             <Button type="submit" disabled={saving}>
               {saving ? <RefreshCw className="spin" /> : <Save />}
               {saving ? 'Saving…' : product ? 'Save changes' : 'Create product'}

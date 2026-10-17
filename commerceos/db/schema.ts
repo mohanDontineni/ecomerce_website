@@ -19,7 +19,15 @@ export const users = sqliteTable(
     displayName: text('display_name').notNull(),
     passwordHash: text('password_hash').notNull(),
     role: text('role', {
-      enum: ['owner', 'admin', 'catalog', 'fulfillment', 'support'],
+      enum: [
+        'owner',
+        'admin',
+        'catalog',
+        'fulfillment',
+        'support',
+        'cashier',
+        'purchasing',
+      ],
     })
       .notNull()
       .default('support'),
@@ -435,6 +443,590 @@ export const orderItems = sqliteTable(
     index('idx_order_items_variant_id').on(table.variantId),
     check('order_items_quantity_positive', sql`${table.quantity} > 0`),
     check('order_items_price_nonnegative', sql`${table.unitPriceCents} >= 0`),
+  ],
+);
+
+export const retailLocations = sqliteTable(
+  'retail_locations',
+  {
+    id: text('id').primaryKey(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    type: text('type', { enum: ['store', 'warehouse', 'virtual'] })
+      .notNull()
+      .default('store'),
+    status: text('status', { enum: ['active', 'inactive'] })
+      .notNull()
+      .default('active'),
+    fulfillmentEnabled: integer('fulfillment_enabled', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    timezone: text('timezone').notNull().default('UTC'),
+    addressJson: text('address_json').notNull().default('{}'),
+    taxRateBasisPoints: integer('tax_rate_basis_points').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_retail_locations_code').on(table.code),
+    index('idx_retail_locations_status_name').on(table.status, table.name),
+    check(
+      'retail_location_tax_rate_valid',
+      sql`${table.taxRateBasisPoints} >= 0 AND ${table.taxRateBasisPoints} <= 3000`,
+    ),
+  ],
+);
+
+export const retailRegisters = sqliteTable(
+  'retail_registers',
+  {
+    id: text('id').primaryKey(),
+    locationId: text('location_id')
+      .notNull()
+      .references(() => retailLocations.id, { onDelete: 'restrict' }),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    status: text('status', { enum: ['active', 'inactive'] })
+      .notNull()
+      .default('active'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_retail_registers_location_code').on(
+      table.locationId,
+      table.code,
+    ),
+    index('idx_retail_registers_location_status').on(
+      table.locationId,
+      table.status,
+    ),
+  ],
+);
+
+export const productIdentifiers = sqliteTable(
+  'product_identifiers',
+  {
+    id: text('id').primaryKey(),
+    variantId: text('variant_id')
+      .notNull()
+      .references(() => productVariants.id, { onDelete: 'cascade' }),
+    kind: text('kind', {
+      enum: ['upc', 'ean', 'gtin', 'isbn', 'mpn', 'internal'],
+    }).notNull(),
+    value: text('value').notNull(),
+    normalizedValue: text('normalized_value').notNull(),
+    isPrimary: integer('is_primary', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_product_identifiers_normalized').on(table.normalizedValue),
+    uniqueIndex('idx_product_identifiers_one_primary')
+      .on(table.variantId)
+      .where(sql`${table.isPrimary} = 1`),
+    index('idx_product_identifiers_variant').on(table.variantId),
+  ],
+);
+
+export const retailVariantDetails = sqliteTable(
+  'retail_variant_details',
+  {
+    variantId: text('variant_id')
+      .primaryKey()
+      .references(() => productVariants.id, { onDelete: 'cascade' }),
+    supplierSku: text('supplier_sku'),
+    department: text('department'),
+    unit: text('unit').notNull().default('each'),
+    casePackQuantity: integer('case_pack_quantity').notNull().default(1),
+    taxCategory: text('tax_category').notNull().default('general'),
+    ageRestriction: integer('age_restriction'),
+    trackExpiry: integer('track_expiry', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    index('idx_retail_variant_details_supplier_sku').on(table.supplierSku),
+    index('idx_retail_variant_details_department').on(table.department),
+    check('retail_case_pack_positive', sql`${table.casePackQuantity} > 0`),
+    check(
+      'retail_age_restriction_valid',
+      sql`${table.ageRestriction} IS NULL OR (${table.ageRestriction} >= 0 AND ${table.ageRestriction} <= 99)`,
+    ),
+  ],
+);
+
+export const locationInventory = sqliteTable(
+  'location_inventory',
+  {
+    locationId: text('location_id')
+      .notNull()
+      .references(() => retailLocations.id, { onDelete: 'restrict' }),
+    variantId: text('variant_id')
+      .notNull()
+      .references(() => productVariants.id, { onDelete: 'restrict' }),
+    onHand: integer('on_hand').notNull().default(0),
+    reserved: integer('reserved').notNull().default(0),
+    reorderPoint: integer('reorder_point').notNull().default(0),
+    parLevel: integer('par_level'),
+    version: integer('version').notNull().default(1),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.locationId, table.variantId] }),
+    index('idx_location_inventory_variant').on(
+      table.variantId,
+      table.locationId,
+    ),
+    index('idx_location_inventory_location_stock').on(
+      table.locationId,
+      table.onHand,
+      table.reserved,
+    ),
+    check(
+      'location_inventory_nonnegative',
+      sql`${table.onHand} >= 0 AND ${table.reserved} >= 0 AND ${table.reserved} <= ${table.onHand}`,
+    ),
+    check(
+      'location_inventory_thresholds_valid',
+      sql`${table.reorderPoint} >= 0 AND (${table.parLevel} IS NULL OR ${table.parLevel} >= ${table.reorderPoint})`,
+    ),
+  ],
+);
+
+export const locationInventoryMovements = sqliteTable(
+  'location_inventory_movements',
+  {
+    id: text('id').primaryKey(),
+    locationId: text('location_id')
+      .notNull()
+      .references(() => retailLocations.id, { onDelete: 'restrict' }),
+    productId: text('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'restrict' }),
+    variantId: text('variant_id')
+      .notNull()
+      .references(() => productVariants.id, { onDelete: 'restrict' }),
+    delta: integer('delta').notNull(),
+    balanceAfter: integer('balance_after').notNull(),
+    reason: text('reason').notNull(),
+    referenceType: text('reference_type'),
+    referenceId: text('reference_id'),
+    externalKey: text('external_key'),
+    unitCostCents: integer('unit_cost_cents'),
+    note: text('note'),
+    actorUserId: text('actor_user_id').references(() => users.id),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_location_inventory_movements_external_key').on(
+      table.externalKey,
+    ),
+    index('idx_location_inventory_movements_location_created').on(
+      table.locationId,
+      table.createdAt,
+    ),
+    index('idx_location_inventory_movements_variant_created').on(
+      table.variantId,
+      table.createdAt,
+    ),
+    index('idx_location_inventory_movements_reference').on(
+      table.referenceType,
+      table.referenceId,
+    ),
+    check(
+      'location_inventory_balance_nonnegative',
+      sql`${table.balanceAfter} >= 0`,
+    ),
+  ],
+);
+
+export const suppliers = sqliteTable(
+  'suppliers',
+  {
+    id: text('id').primaryKey(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    email: text('email'),
+    phone: text('phone'),
+    addressJson: text('address_json').notNull().default('{}'),
+    status: text('status', { enum: ['active', 'inactive'] })
+      .notNull()
+      .default('active'),
+    paymentTerms: text('payment_terms'),
+    notes: text('notes'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_suppliers_code').on(table.code),
+    index('idx_suppliers_status_name').on(table.status, table.name),
+  ],
+);
+
+export const purchaseOrders = sqliteTable(
+  'purchase_orders',
+  {
+    id: text('id').primaryKey(),
+    poNumber: text('po_number').notNull(),
+    supplierId: text('supplier_id')
+      .notNull()
+      .references(() => suppliers.id, { onDelete: 'restrict' }),
+    destinationLocationId: text('destination_location_id')
+      .notNull()
+      .references(() => retailLocations.id, { onDelete: 'restrict' }),
+    status: text('status', {
+      enum: [
+        'draft',
+        'submitted',
+        'partially_received',
+        'received',
+        'cancelled',
+      ],
+    })
+      .notNull()
+      .default('draft'),
+    currency: text('currency').notNull().default('USD'),
+    subtotalCents: integer('subtotal_cents').notNull().default(0),
+    expectedAt: text('expected_at'),
+    note: text('note'),
+    createdBy: text('created_by').references(() => users.id),
+    submittedAt: text('submitted_at'),
+    receivedAt: text('received_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_purchase_orders_number').on(table.poNumber),
+    index('idx_purchase_orders_supplier_status_created').on(
+      table.supplierId,
+      table.status,
+      table.createdAt,
+    ),
+    index('idx_purchase_orders_location_status_expected').on(
+      table.destinationLocationId,
+      table.status,
+      table.expectedAt,
+    ),
+    check(
+      'purchase_orders_subtotal_nonnegative',
+      sql`${table.subtotalCents} >= 0`,
+    ),
+  ],
+);
+
+export const purchaseOrderItems = sqliteTable(
+  'purchase_order_items',
+  {
+    id: text('id').primaryKey(),
+    purchaseOrderId: text('purchase_order_id')
+      .notNull()
+      .references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+    variantId: text('variant_id')
+      .notNull()
+      .references(() => productVariants.id, { onDelete: 'restrict' }),
+    supplierSku: text('supplier_sku'),
+    description: text('description').notNull(),
+    orderedQuantity: integer('ordered_quantity').notNull(),
+    receivedQuantity: integer('received_quantity').notNull().default(0),
+    unitCostCents: integer('unit_cost_cents').notNull(),
+    expiryDate: text('expiry_date'),
+    batchNumber: text('batch_number'),
+  },
+  (table) => [
+    uniqueIndex('idx_purchase_order_items_order_variant').on(
+      table.purchaseOrderId,
+      table.variantId,
+    ),
+    index('idx_purchase_order_items_variant').on(table.variantId),
+    check(
+      'purchase_order_item_quantities_valid',
+      sql`${table.orderedQuantity} > 0 AND ${table.receivedQuantity} >= 0 AND ${table.receivedQuantity} <= ${table.orderedQuantity}`,
+    ),
+    check(
+      'purchase_order_item_cost_nonnegative',
+      sql`${table.unitCostCents} >= 0`,
+    ),
+  ],
+);
+
+export const registerShifts = sqliteTable(
+  'register_shifts',
+  {
+    id: text('id').primaryKey(),
+    registerId: text('register_id')
+      .notNull()
+      .references(() => retailRegisters.id, { onDelete: 'restrict' }),
+    openedBy: text('opened_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    closedBy: text('closed_by').references(() => users.id, {
+      onDelete: 'restrict',
+    }),
+    status: text('status', { enum: ['open', 'closed'] })
+      .notNull()
+      .default('open'),
+    openingCashCents: integer('opening_cash_cents').notNull().default(0),
+    expectedCashCents: integer('expected_cash_cents').notNull().default(0),
+    closingCashCents: integer('closing_cash_cents'),
+    varianceCents: integer('variance_cents'),
+    openedAt: text('opened_at').notNull(),
+    closedAt: text('closed_at'),
+    note: text('note'),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_register_shifts_one_open')
+      .on(table.registerId)
+      .where(sql`${table.status} = 'open'`),
+    index('idx_register_shifts_opened_by_date').on(
+      table.openedBy,
+      table.openedAt,
+    ),
+    check(
+      'register_shift_cash_nonnegative',
+      sql`${table.openingCashCents} >= 0 AND ${table.expectedCashCents} >= 0 AND (${table.closingCashCents} IS NULL OR ${table.closingCashCents} >= 0)`,
+    ),
+  ],
+);
+
+export const retailSales = sqliteTable(
+  'retail_sales',
+  {
+    id: text('id').primaryKey(),
+    receiptNumber: text('receipt_number').notNull(),
+    locationId: text('location_id')
+      .notNull()
+      .references(() => retailLocations.id, { onDelete: 'restrict' }),
+    registerId: text('register_id')
+      .notNull()
+      .references(() => retailRegisters.id, { onDelete: 'restrict' }),
+    shiftId: text('shift_id')
+      .notNull()
+      .references(() => registerShifts.id, { onDelete: 'restrict' }),
+    customerId: text('customer_id').references(() => customers.id, {
+      onDelete: 'set null',
+    }),
+    cashierUserId: text('cashier_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    status: text('status', {
+      enum: ['held', 'completed', 'voided', 'partially_refunded', 'refunded'],
+    })
+      .notNull()
+      .default('completed'),
+    currency: text('currency').notNull(),
+    subtotalCents: integer('subtotal_cents').notNull(),
+    discountCents: integer('discount_cents').notNull().default(0),
+    taxCents: integer('tax_cents').notNull().default(0),
+    totalCents: integer('total_cents').notNull(),
+    costCents: integer('cost_cents').notNull().default(0),
+    idempotencyKey: text('idempotency_key').notNull(),
+    customerName: text('customer_name'),
+    customerEmail: text('customer_email'),
+    note: text('note'),
+    completedAt: text('completed_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_retail_sales_receipt').on(table.receiptNumber),
+    uniqueIndex('idx_retail_sales_idempotency').on(table.idempotencyKey),
+    index('idx_retail_sales_location_completed').on(
+      table.locationId,
+      table.completedAt,
+    ),
+    index('idx_retail_sales_shift_created').on(table.shiftId, table.createdAt),
+    index('idx_retail_sales_status_created').on(table.status, table.createdAt),
+    check(
+      'retail_sales_totals_nonnegative',
+      sql`${table.subtotalCents} >= 0 AND ${table.discountCents} >= 0 AND ${table.taxCents} >= 0 AND ${table.totalCents} >= 0 AND ${table.costCents} >= 0`,
+    ),
+  ],
+);
+
+export const retailSaleItems = sqliteTable(
+  'retail_sale_items',
+  {
+    id: text('id').primaryKey(),
+    saleId: text('sale_id')
+      .notNull()
+      .references(() => retailSales.id, { onDelete: 'cascade' }),
+    lineNumber: integer('line_number').notNull(),
+    productId: text('product_id').references(() => products.id, {
+      onDelete: 'set null',
+    }),
+    variantId: text('variant_id').references(() => productVariants.id, {
+      onDelete: 'set null',
+    }),
+    sku: text('sku').notNull(),
+    name: text('name').notNull(),
+    variantTitle: text('variant_title'),
+    optionsJson: text('options_json').notNull().default('{}'),
+    quantity: integer('quantity').notNull(),
+    regularUnitPriceCents: integer('regular_unit_price_cents').notNull(),
+    unitPriceCents: integer('unit_price_cents').notNull(),
+    discountCents: integer('discount_cents').notNull().default(0),
+    taxCents: integer('tax_cents').notNull().default(0),
+    lineTotalCents: integer('line_total_cents').notNull(),
+    unitCostCents: integer('unit_cost_cents').notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex('idx_retail_sale_items_sale_line').on(
+      table.saleId,
+      table.lineNumber,
+    ),
+    index('idx_retail_sale_items_variant').on(table.variantId),
+    check('retail_sale_item_quantity_positive', sql`${table.quantity} > 0`),
+    check(
+      'retail_sale_item_money_nonnegative',
+      sql`${table.regularUnitPriceCents} >= 0 AND ${table.unitPriceCents} >= 0 AND ${table.discountCents} >= 0 AND ${table.taxCents} >= 0 AND ${table.lineTotalCents} >= 0 AND ${table.unitCostCents} >= 0`,
+    ),
+  ],
+);
+
+export const retailSaleTenders = sqliteTable(
+  'retail_sale_tenders',
+  {
+    id: text('id').primaryKey(),
+    saleId: text('sale_id')
+      .notNull()
+      .references(() => retailSales.id, { onDelete: 'restrict' }),
+    kind: text('kind', {
+      enum: ['cash', 'card', 'gift_card', 'store_credit', 'other'],
+    }).notNull(),
+    direction: text('direction', { enum: ['payment', 'refund'] })
+      .notNull()
+      .default('payment'),
+    amountCents: integer('amount_cents').notNull(),
+    provider: text('provider'),
+    providerReference: text('provider_reference'),
+    status: text('status', {
+      enum: ['pending', 'authorized', 'captured', 'failed', 'refunded'],
+    })
+      .notNull()
+      .default('captured'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_retail_sale_tenders_sale_created').on(
+      table.saleId,
+      table.createdAt,
+    ),
+    index('idx_retail_sale_tenders_provider_reference').on(
+      table.provider,
+      table.providerReference,
+    ),
+    check('retail_sale_tender_amount_positive', sql`${table.amountCents} > 0`),
+  ],
+);
+
+export const catalogImportJobs = sqliteTable(
+  'catalog_import_jobs',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind', {
+      enum: ['catalog_upsert', 'inventory_snapshot', 'inventory_delta'],
+    }).notNull(),
+    status: text('status', {
+      enum: ['analyzing', 'review', 'ready', 'applying', 'completed', 'failed'],
+    })
+      .notNull()
+      .default('review'),
+    originalFilename: text('original_filename').notNull(),
+    format: text('format', {
+      enum: ['csv', 'tsv', 'json', 'xlsx', 'xml'],
+    }).notNull(),
+    contentSha256: text('content_sha256').notNull(),
+    dedupeKey: text('dedupe_key'),
+    mappingJson: text('mapping_json').notNull().default('{}'),
+    defaultsJson: text('defaults_json').notNull().default('{}'),
+    summaryJson: text('summary_json').notNull().default('{}'),
+    totalRows: integer('total_rows').notNull().default(0),
+    validRows: integer('valid_rows').notNull().default(0),
+    warningRows: integer('warning_rows').notNull().default(0),
+    errorRows: integer('error_rows').notNull().default(0),
+    appliedRows: integer('applied_rows').notNull().default(0),
+    requestedBy: text('requested_by').references(() => users.id),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    completedAt: text('completed_at'),
+  },
+  (table) => [
+    index('idx_catalog_import_jobs_status_created').on(
+      table.status,
+      table.createdAt,
+    ),
+    index('idx_catalog_import_jobs_user_created').on(
+      table.requestedBy,
+      table.createdAt,
+    ),
+    index('idx_catalog_import_jobs_digest').on(table.contentSha256),
+    uniqueIndex('idx_catalog_import_jobs_dedupe').on(table.dedupeKey),
+  ],
+);
+
+export const catalogImportRows = sqliteTable(
+  'catalog_import_rows',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => catalogImportJobs.id, { onDelete: 'cascade' }),
+    rowNumber: integer('row_number').notNull(),
+    sourceJson: text('source_json').notNull(),
+    normalizedJson: text('normalized_json').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    groupKey: text('group_key').notNull(),
+    action: text('action', {
+      enum: [
+        'create_product',
+        'create_variant',
+        'create_variant_pending',
+        'update',
+        'adjust',
+        'unchanged',
+        'skip',
+      ],
+    }).notNull(),
+    status: text('status', {
+      enum: ['valid', 'warning', 'error', 'applied', 'skipped'],
+    }).notNull(),
+    confidenceBasisPoints: integer('confidence_basis_points')
+      .notNull()
+      .default(0),
+    productId: text('product_id').references(() => products.id, {
+      onDelete: 'set null',
+    }),
+    variantId: text('variant_id').references(() => productVariants.id, {
+      onDelete: 'set null',
+    }),
+    errorsJson: text('errors_json').notNull().default('[]'),
+    warningsJson: text('warnings_json').notNull().default('[]'),
+    appliedAt: text('applied_at'),
+  },
+  (table) => [
+    uniqueIndex('idx_catalog_import_rows_job_row').on(
+      table.jobId,
+      table.rowNumber,
+    ),
+    uniqueIndex('idx_catalog_import_rows_job_fingerprint').on(
+      table.jobId,
+      table.fingerprint,
+    ),
+    index('idx_catalog_import_rows_job_status_row').on(
+      table.jobId,
+      table.status,
+      table.rowNumber,
+    ),
+    index('idx_catalog_import_rows_job_group').on(table.jobId, table.groupKey),
+    check(
+      'catalog_import_confidence_valid',
+      sql`${table.confidenceBasisPoints} >= 0 AND ${table.confidenceBasisPoints} <= 10000`,
+    ),
   ],
 );
 
