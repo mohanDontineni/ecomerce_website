@@ -262,9 +262,9 @@ export function LocationsSection({
           icon={<Monitor />}
         />
         <RetailMetric
-          label="Network stock"
+          label="Network on hand"
           value={totalUnits}
-          detail="Units reported by location summaries"
+          detail="Physical units across every location"
           icon={<Package />}
         />
       </div>
@@ -319,7 +319,7 @@ export function LocationsSection({
                     </dd>
                   </span>
                   <span>
-                    <dt className="text-xs text-muted-foreground">Stock</dt>
+                    <dt className="text-xs text-muted-foreground">On hand</dt>
                     <dd className="font-semibold">
                       {location.inventoryUnits ?? 0}
                     </dd>
@@ -427,7 +427,7 @@ export function LocationsSection({
                   >
                     {product.sku} · {product.name}
                     {product.variantTitle ? ` / ${product.variantTitle}` : ''}
-                    {` · ${product.stock} on hand`}
+                    {` · ${product.available} available (${product.onHand} on hand)`}
                   </NativeSelectOption>
                 ))}
               </NativeSelect>

@@ -27,6 +27,7 @@ export type RetailLocation = {
   taxRateBasisPoints: number;
   address?: Record<string, string>;
   inventoryUnits?: number;
+  reservedUnits?: number;
   lowStockCount?: number;
 };
 
@@ -66,7 +67,15 @@ export type RetailProduct = {
   categoryPath?: string[];
   priceCents: number;
   costCents?: number | null;
+  /** Compatibility alias for available inventory. */
   stock: number;
+  onHand: number;
+  reserved: number;
+  available: number;
+  lowStockThreshold: number;
+  reorderPoint: number;
+  parLevel?: number | null;
+  updatedAt?: string | null;
   imageUrl?: string | null;
   status?: 'active' | 'archived';
 };
@@ -366,6 +375,9 @@ export function normalizeRetailOverview(payload: unknown): {
       inventoryUnits: numberValue(
         row.inventoryUnits ?? row.inventory_units ?? row.on_hand,
       ),
+      reservedUnits: numberValue(
+        row.reservedUnits ?? row.reserved_units ?? row.reserved,
+      ),
       lowStockCount: numberValue(row.lowStockCount ?? row.low_stock_count),
     }),
   );
@@ -404,8 +416,25 @@ export function normalizeRetailOverview(payload: unknown): {
     }),
   );
   const catalogSource = root.products ?? root.catalog;
-  const products = records(catalogSource).map(
-    (row): RetailProduct => ({
+  const products = records(catalogSource).map((row): RetailProduct => {
+    const hasExplicitOnHand =
+      row.onHand !== undefined || row.on_hand !== undefined;
+    const reserved = numberValue(row.reserved);
+    const onHand = hasExplicitOnHand
+      ? numberValue(row.onHand ?? row.on_hand)
+      : Math.max(0, numberValue(row.stock) + reserved);
+    const available = Math.max(
+      0,
+      row.available !== undefined || row.available_units !== undefined
+        ? numberValue(row.available ?? row.available_units)
+        : hasExplicitOnHand
+          ? onHand - reserved
+          : numberValue(row.stock),
+    );
+    const lowStockThreshold = numberValue(
+      row.lowStockThreshold ?? row.low_stock_threshold,
+    );
+    return {
       id: textValue(row.id ?? row.variant_id),
       productId: textValue(row.productId ?? row.product_id),
       variantId: textValue(row.variantId ?? row.variant_id ?? row.id),
@@ -422,10 +451,22 @@ export function normalizeRetailOverview(payload: unknown): {
         row.costCents !== undefined || row.cost_cents !== undefined
           ? numberValue(row.costCents ?? row.cost_cents)
           : undefined,
-      stock: Math.max(
-        0,
-        numberValue(row.stock ?? row.on_hand) - numberValue(row.reserved),
+      stock: available,
+      onHand,
+      reserved,
+      available,
+      lowStockThreshold,
+      reorderPoint: numberValue(
+        row.reorderPoint ?? row.reorder_point,
+        lowStockThreshold,
       ),
+      parLevel:
+        row.parLevel === null || row.par_level === null
+          ? null
+          : row.parLevel !== undefined || row.par_level !== undefined
+            ? numberValue(row.parLevel ?? row.par_level)
+            : undefined,
+      updatedAt: optionalText(row.updatedAt ?? row.updated_at),
       imageUrl: optionalText(row.imageUrl ?? row.image_url),
       status: textValue(
         row.status ??
@@ -434,8 +475,8 @@ export function normalizeRetailOverview(payload: unknown): {
           row.product_status,
         'active',
       ) as RetailProduct['status'],
-    }),
-  );
+    };
+  });
   const sales = records(root.sales).map((row): RetailSale => {
     const locationName = optionalText(row.locationName ?? row.location_name);
     const registerName = optionalText(row.registerName ?? row.register_name);

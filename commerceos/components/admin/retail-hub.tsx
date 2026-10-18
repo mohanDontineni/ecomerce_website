@@ -40,6 +40,7 @@ export type RetailHubProps = {
   currency?: string;
   initialTab?: RetailTab;
   onNotice?: (message: string, tone: RetailNoticeTone) => void;
+  onDataChanged?: () => Promise<void> | void;
 };
 
 const tabItems: Array<{
@@ -69,6 +70,7 @@ export function RetailHub({
   currency: currencyOverride,
   initialTab = 'pos',
   onNotice,
+  onDataChanged,
 }: RetailHubProps) {
   const [tab, setTab] = useState<RetailTab>(initialTab);
   const [data, setData] = useState<RetailOverview>(EMPTY_RETAIL_OVERVIEW);
@@ -90,7 +92,7 @@ export function RetailHub({
     [onNotice],
   );
 
-  const refresh = useCallback(async () => {
+  const loadOverview = useCallback(async () => {
     setLoading(true);
     setLoadError('');
     try {
@@ -118,9 +120,13 @@ export function RetailHub({
     }
   }, [apiBase]);
 
+  const refresh = useCallback(async () => {
+    await Promise.all([loadOverview(), Promise.resolve(onDataChanged?.())]);
+  }, [loadOverview, onDataChanged]);
+
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void loadOverview();
+  }, [loadOverview]);
 
   const scopedData: RetailOverview = locationId
     ? {

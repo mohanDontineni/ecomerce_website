@@ -650,12 +650,27 @@ body {
   .product-form-footer { @apply mt-5; }
   .stack-form { @apply space-y-4 pb-4; }
   .inventory-summary { @apply mb-5 grid gap-4 sm:grid-cols-3; }
+  .inventory-summary-four { @apply sm:grid-cols-2 xl:grid-cols-4; }
   .inventory-summary article { @apply flex items-center gap-3 rounded-2xl bg-white p-5 ring-1 ring-black/5; }
   .inventory-summary svg { @apply h-7 w-7 text-primary; }
   .inventory-summary div { @apply flex flex-col; }
   .inventory-summary strong { @apply text-xl font-black; }
   .inventory-summary span { @apply text-[10px] uppercase tracking-wider text-muted-foreground; }
   .inventory-count { @apply text-lg!; }
+  .inventory-workbench { @apply overflow-hidden rounded-2xl bg-white shadow-[0_8px_30px_rgba(31,27,50,.04)] ring-1 ring-black/5; }
+  .inventory-controls { @apply grid gap-4 border-b border-border p-4 xl:grid-cols-[minmax(300px,1fr)_auto] xl:items-end; }
+  .inventory-search { @apply flex h-10 min-w-0 items-center gap-2 rounded-xl border border-input bg-white px-3; }
+  .inventory-search > svg { @apply h-4 w-4 shrink-0 text-muted-foreground; }
+  .inventory-search > input { @apply h-auto border-0 p-0 focus-visible:ring-0; }
+  .inventory-filters { @apply grid gap-3 sm:grid-cols-3; }
+  .inventory-filters > label { @apply grid min-w-40 gap-1; }
+  .inventory-filters > label > span { @apply text-[9px] font-bold uppercase tracking-wider text-muted-foreground; }
+  .inventory-scope-note { @apply flex flex-col gap-2 border-b border-border bg-muted/40 px-4 py-3 text-xs sm:flex-row sm:items-center sm:justify-between; }
+  .inventory-scope-note > div { @apply flex min-w-0 flex-col; }
+  .inventory-scope-note strong { @apply text-foreground; }
+  .inventory-scope-note span { @apply text-muted-foreground; }
+  .inventory-ledger-table { @apply min-h-60; }
+  .inventory-load-more { @apply flex flex-col items-center justify-between gap-3 border-t border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground sm:flex-row; }
 
   .customer-grid { @apply grid gap-4 md:grid-cols-2 xl:grid-cols-3; }
   .customer-grid > article { @apply rounded-2xl bg-white p-5 shadow-[0_8px_30px_rgba(31,27,50,.04)] ring-1 ring-black/5; }

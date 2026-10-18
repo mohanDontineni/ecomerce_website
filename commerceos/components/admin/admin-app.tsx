@@ -1,11 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle,
   Archive,
   ArrowRight,
-  BarChart3,
   Boxes,
   Check,
   CheckCircle2,
@@ -41,7 +39,6 @@ import {
 import type {
   CategoryNode,
   Product,
-  ProductVariant,
   StoreSettings,
   ThemeSettings,
 } from '@/lib/domain';
@@ -66,6 +63,7 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ModularProductDialog } from './modular-product-dialog';
+import { InventorySection } from './inventory-section';
 import { RetailHub } from './retail-hub';
 import { ADMIN_SESSION_EXPIRED_EVENT } from './retail/types';
 
@@ -268,6 +266,10 @@ export function AdminApp() {
     })();
   }, [refresh]);
 
+  useEffect(() => {
+    if (authState === 'ready' && view === 'inventory') void refresh();
+  }, [authState, refresh, view]);
+
   async function authenticated(nextUser: AdminUser) {
     setAuthMessage('');
     setUser(nextUser);
@@ -344,8 +346,12 @@ export function AdminApp() {
                 <Icon />
                 <span>{item.label}</span>
                 {item.id === 'inventory' &&
-                  overview?.products.some(
-                    (product) => product.stock <= product.lowStockThreshold,
+                  overview?.products.some((product) =>
+                    product.variants.some(
+                      (variant) =>
+                        variant.status === 'active' &&
+                        variant.stock <= variant.lowStockThreshold,
+                    ),
                   ) && <i />}
               </button>
             );
@@ -408,8 +414,7 @@ export function AdminApp() {
               )}
               {view === 'inventory' && (
                 <InventorySection
-                  products={overview.products}
-                  refresh={refresh}
+                  refreshAdmin={refresh}
                   showNotice={showNotice}
                 />
               )}
@@ -417,6 +422,7 @@ export function AdminApp() {
                 <RetailHub
                   currency={overview.store.currency}
                   onNotice={(message) => showNotice(message)}
+                  onDataChanged={refresh}
                 />
               )}
               {view === 'orders' && (
@@ -1320,300 +1326,6 @@ function ProductsSection({
         </DialogContent>
       </Dialog>
     </>
-  );
-}
-
-function InventorySection({
-  products,
-  refresh,
-  showNotice,
-}: {
-  products: Product[];
-  refresh: () => Promise<void>;
-  showNotice: (message: string) => void;
-}) {
-  const [selected, setSelected] = useState<{
-    product: Product;
-    variant: ProductVariant;
-  } | null>(null);
-  const inventoryRows = products
-    .filter((product) => product.status !== 'archived')
-    .flatMap((product) =>
-      product.variants
-        .filter((variant) => variant.status === 'active')
-        .map((variant) => ({ product, variant })),
-    );
-  const lowStock = inventoryRows.filter(
-    ({ variant }) => variant.stock <= variant.lowStockThreshold,
-  );
-  return (
-    <>
-      <SectionHeading
-        eyebrow="Stock control"
-        title="Inventory"
-        description="Receive, correct, return, or write off stock with an auditable movement trail."
-        actions={
-          <Badge variant={lowStock.length ? 'destructive' : 'secondary'}>
-            {lowStock.length} low-stock alerts
-          </Badge>
-        }
-      />
-      <div className="inventory-summary">
-        <article>
-          <Boxes />
-          <div>
-            <strong>
-              {inventoryRows.reduce((sum, row) => sum + row.variant.stock, 0)}
-            </strong>
-            <span>Units on hand</span>
-          </div>
-        </article>
-        <article>
-          <AlertTriangle />
-          <div>
-            <strong>{lowStock.length}</strong>
-            <span>Need attention</span>
-          </div>
-        </article>
-        <article>
-          <BarChart3 />
-          <div>
-            <strong>
-              {
-                inventoryRows.filter(
-                  (row) =>
-                    row.product.status === 'active' && row.variant.stock > 0,
-                ).length
-              }
-            </strong>
-            <span>Sellable SKUs</span>
-          </div>
-        </article>
-      </div>
-      <div className="admin-table-card inventory-table">
-        <div className="admin-table-head">
-          <span>Product</span>
-          <span>On hand</span>
-          <span>Alert threshold</span>
-          <span>Health</span>
-          <span />
-        </div>
-        {inventoryRows.map(({ product, variant }) => {
-          const health =
-            variant.stock === 0
-              ? 'Out of stock'
-              : variant.stock <= variant.lowStockThreshold
-                ? 'Low'
-                : 'Healthy';
-          return (
-            <article className="admin-table-row" key={variant.id}>
-              <div className="product-cell">
-                {product.images[0]?.url ? (
-                  <img src={product.images[0].url} alt="" />
-                ) : (
-                  <span
-                    className="product-image-placeholder"
-                    aria-hidden="true"
-                  >
-                    <Package />
-                  </span>
-                )}
-                <div>
-                  <strong>
-                    {product.name}
-                    {variant.isDefault ? '' : ` · ${variant.title}`}
-                  </strong>
-                  <span>{variant.sku}</span>
-                </div>
-              </div>
-              <strong className="inventory-count">{variant.stock}</strong>
-              <span>{variant.lowStockThreshold} units</span>
-              <Badge
-                variant={
-                  health === 'Healthy'
-                    ? 'secondary'
-                    : health === 'Low'
-                      ? 'outline'
-                      : 'destructive'
-                }
-              >
-                {health}
-              </Badge>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setSelected({ product, variant })}
-              >
-                Adjust primary store
-              </Button>
-            </article>
-          );
-        })}
-      </div>
-      <InventoryDialog
-        product={selected?.product ?? null}
-        variant={selected?.variant ?? null}
-        onClose={() => setSelected(null)}
-        onSaved={async (stock) => {
-          showNotice(`Inventory updated to ${stock} units.`);
-          setSelected(null);
-          await refresh();
-        }}
-      />
-    </>
-  );
-}
-
-function InventoryDialog({
-  product,
-  variant,
-  onClose,
-  onSaved,
-}: {
-  product: Product | null;
-  variant: ProductVariant | null;
-  onClose: () => void;
-  onSaved: (stock: number) => Promise<void>;
-}) {
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-  const adjustmentAttempt = useRef<{
-    signature: string;
-    key: string;
-  } | null>(null);
-  useEffect(() => {
-    setError('');
-    setSaving(false);
-    adjustmentAttempt.current = null;
-  }, [variant?.id]);
-  async function submit(event: React.SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!product || !variant) return;
-    setSaving(true);
-    setError('');
-    const form = new FormData(event.currentTarget);
-    const payload = {
-      productId: product.id,
-      variantId: variant.id,
-      locationId: 'loc_main',
-      delta: Number(form.get('delta')),
-      reason: form.get('reason'),
-      note: form.get('note'),
-    };
-    const signature = JSON.stringify(payload);
-    if (adjustmentAttempt.current?.signature !== signature) {
-      adjustmentAttempt.current = {
-        signature,
-        key: crypto.randomUUID(),
-      };
-    }
-    try {
-      const response = await fetch('/api/inventory/adjust', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          ...payload,
-          idempotencyKey: adjustmentAttempt.current.key,
-        }),
-      });
-      const result = (await response.json()) as {
-        stock?: number;
-        variantStock?: number;
-        error?: string;
-      };
-      if (!response.ok || result.variantStock === undefined) {
-        throw new Error(result.error || 'Inventory could not be adjusted.');
-      }
-      adjustmentAttempt.current = null;
-      await onSaved(result.variantStock);
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : 'Inventory could not be adjusted.',
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <Dialog open={Boolean(product)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
-            Adjust {product?.name}
-            {variant && !variant.isDefault ? ` · ${variant.title}` : ''}
-          </DialogTitle>
-          <DialogDescription>
-            SKU {variant?.sku}. Total sellable stock across locations:{' '}
-            {variant?.stock ?? 0} units. This adjustment applies only to the
-            Primary store (loc_main); use Retail → Locations for another store.
-            Use a negative number to remove stock.
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit}>
-          <div className="stack-form">
-            <div>
-              <Label htmlFor="inventory-delta">Quantity change</Label>
-              <Input
-                id="inventory-delta"
-                name="delta"
-                type="number"
-                step="1"
-                placeholder="+10 or -2"
-                required
-              />
-            </div>
-            <div>
-              <Label htmlFor="inventory-reason">Reason</Label>
-              <NativeSelect
-                id="inventory-reason"
-                name="reason"
-                className="w-full"
-                required
-              >
-                <NativeSelectOption value="manual_adjustment">
-                  Manual stock adjustment
-                </NativeSelectOption>
-                <NativeSelectOption value="correction">
-                  Count correction
-                </NativeSelectOption>
-                <NativeSelectOption value="return">
-                  Customer return
-                </NativeSelectOption>
-                <NativeSelectOption value="damage">
-                  Damage / write-off
-                </NativeSelectOption>
-                <NativeSelectOption value="shrinkage">
-                  Shrinkage / loss
-                </NativeSelectOption>
-              </NativeSelect>
-            </div>
-            <div>
-              <Label htmlFor="inventory-note">Internal note</Label>
-              <Textarea
-                id="inventory-note"
-                name="note"
-                placeholder="Optional context for the audit trail"
-              />
-            </div>
-          </div>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={saving}>
-              {saving ? 'Saving…' : 'Apply adjustment'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
 

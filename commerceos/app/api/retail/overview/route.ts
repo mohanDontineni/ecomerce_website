@@ -98,6 +98,8 @@ export async function GET(request: Request) {
                   l.id AS location_id, l.name AS location_name,
                   COALESCE(li.on_hand, 0) AS on_hand,
                   COALESCE(li.reserved, 0) AS reserved,
+                  COALESCE(li.reorder_point, pv.low_stock_threshold) AS reorder_point,
+                  li.par_level, li.updated_at,
                   pi.value AS barcode,
                   (SELECT url FROM product_images
                    WHERE product_id = p.id ORDER BY sort_order LIMIT 1) AS image_url
@@ -309,10 +311,23 @@ export async function GET(request: Request) {
                   : undefined,
               priceCents: Number(row.price_cents ?? 0),
               costCents: canReport ? Number(row.cost_cents ?? 0) : undefined,
+              onHand: Number(row.on_hand ?? 0),
+              reserved: Number(row.reserved ?? 0),
+              available: Math.max(
+                0,
+                Number(row.on_hand ?? 0) - Number(row.reserved ?? 0),
+              ),
               stock: Math.max(
                 0,
                 Number(row.on_hand ?? 0) - Number(row.reserved ?? 0),
               ),
+              lowStockThreshold: Number(row.low_stock_threshold ?? 0),
+              reorderPoint: Number(
+                row.reorder_point ?? row.low_stock_threshold ?? 0,
+              ),
+              parLevel:
+                row.par_level === null ? null : Number(row.par_level ?? 0),
+              updatedAt: row.updated_at,
               imageUrl: row.image_url,
               status: row.variant_status,
             };
