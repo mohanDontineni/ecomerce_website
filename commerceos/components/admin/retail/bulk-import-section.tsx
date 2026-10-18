@@ -115,6 +115,12 @@ export function BulkImportSection({
   const [columnMappingsBySheet, setColumnMappingsBySheet] = useState<
     Record<string, Record<string, BulkImportField | 'ignore'>>
   >({});
+  const [headerRowBySheet, setHeaderRowBySheet] = useState<
+    Record<string, number>
+  >({});
+  const [skuPrefixBySheet, setSkuPrefixBySheet] = useState<
+    Record<string, string>
+  >({});
   const [error, setError] = useState('');
 
   const dataRows = preview?.rows.filter((row) => row.kind === 'data') ?? [];
@@ -131,6 +137,10 @@ export function BulkImportSection({
     ) ?? [];
   const selectedHasErrors =
     selectedErrorRows.length > 0 || selectedErrorGroups.length > 0;
+  const duplicateSkuIssues =
+    preview?.issues.filter((issue) =>
+      ['DUPLICATE_FILE_SKU', 'DUPLICATE_VARIANT_SKU'].includes(issue.code),
+    ) ?? [];
   const progress = job
     ? job.totalRows > 0
       ? Math.round((job.appliedRows / job.totalRows) * 100)
@@ -146,9 +156,13 @@ export function BulkImportSection({
       string,
       Record<string, BulkImportField | 'ignore'>
     > = {},
+    nextHeaderRows: Record<string, number> = {},
+    nextSkuPrefixes: Record<string, string> = {},
   ) {
     setFile(nextFile);
     setColumnMappingsBySheet(nextMappings);
+    setHeaderRowBySheet(nextHeaderRows);
+    setSkuPrefixBySheet(nextSkuPrefixes);
     setPreview(null);
     setJob(null);
     setExcludedRows(new Set());
@@ -161,6 +175,8 @@ export function BulkImportSection({
         fileName: nextFile.name,
         mode: modeByKind[nextKind],
         columnMappingsBySheet: nextMappings,
+        headerRowBySheet: nextHeaderRows,
+        skuPrefixBySheet: nextSkuPrefixes,
       });
       setPreview(result);
       notify(
@@ -185,7 +201,15 @@ export function BulkImportSection({
   async function changeKind(nextKind: ImportKind) {
     setKind(nextKind);
     setForceNew(false);
-    if (file) await analyzeFile(file, nextKind, columnMappingsBySheet);
+    if (file) {
+      await analyzeFile(
+        file,
+        nextKind,
+        columnMappingsBySheet,
+        headerRowBySheet,
+        skuPrefixBySheet,
+      );
+    }
   }
 
   async function changeColumnMapping(
@@ -220,7 +244,45 @@ export function BulkImportSection({
       ...columnMappingsBySheet,
       [sheetName]: sheetMappings,
     };
-    await analyzeFile(file, kind, nextMappings);
+    await analyzeFile(
+      file,
+      kind,
+      nextMappings,
+      headerRowBySheet,
+      skuPrefixBySheet,
+    );
+  }
+
+  async function applySheetSettings(sheetName: string) {
+    if (!file || !preview) return;
+    const sheet = preview.sheets.find(
+      (candidate) => candidate.name === sheetName,
+    );
+    if (!sheet) return;
+
+    const maxHeaderRow = Math.max(1, sheet.sourceRows.length);
+    const requestedHeaderRow =
+      headerRowBySheet[sheetName] ?? sheet.header.rowNumber;
+    const nextHeaderRow = Math.max(
+      1,
+      Math.min(maxHeaderRow, Math.trunc(requestedHeaderRow)),
+    );
+    const nextHeaderRows = {
+      ...headerRowBySheet,
+      [sheetName]: nextHeaderRow,
+    };
+    const nextSkuPrefixes = { ...skuPrefixBySheet };
+    const nextPrefix = (nextSkuPrefixes[sheetName] ?? '').trim();
+    if (nextPrefix) nextSkuPrefixes[sheetName] = nextPrefix;
+    else delete nextSkuPrefixes[sheetName];
+
+    await analyzeFile(
+      file,
+      kind,
+      columnMappingsBySheet,
+      nextHeaderRows,
+      nextSkuPrefixes,
+    );
   }
 
   function toggleRow(row: BulkImportRow) {
@@ -364,6 +426,8 @@ export function BulkImportSection({
     setAcknowledged(false);
     setForceNew(false);
     setColumnMappingsBySheet({});
+    setHeaderRowBySheet({});
+    setSkuPrefixBySheet({});
     setError('');
   }
 
@@ -546,6 +610,19 @@ export function BulkImportSection({
             />
           </div>
 
+          {duplicateSkuIssues.length ? (
+            <Alert variant="destructive">
+              <AlertTriangle />
+              <AlertTitle>Duplicate SKU identifiers need attention</AlertTitle>
+              <AlertDescription>
+                If separate sheets reuse the same SKU values, add a stable SKU
+                prefix to one affected sheet below and re-analyze. Duplicates
+                within one sheet still need a corrected SKU mapping or source
+                value.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
           <details className="rounded-2xl bg-card p-5 shadow-sm ring-1 ring-black/5">
             <summary className="cursor-pointer list-none font-bold">
               <span className="flex items-center gap-2">
@@ -555,7 +632,7 @@ export function BulkImportSection({
               </span>
             </summary>
             <div className="mt-4 space-y-4">
-              {preview.sheets.map((sheet) => (
+              {preview.sheets.map((sheet, sheetIndex) => (
                 <section key={sheet.name} className="rounded-xl border p-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <strong className="text-sm">{sheet.name}</strong>
@@ -563,6 +640,67 @@ export function BulkImportSection({
                       Header row {sheet.header.rowNumber} ·{' '}
                       {Math.round(sheet.header.confidence * 100)}% confidence
                     </span>
+                  </div>
+                  <div className="mb-4 grid gap-3 rounded-lg bg-muted/60 p-3 sm:grid-cols-2 lg:grid-cols-[minmax(9rem,0.6fr)_minmax(12rem,1fr)_auto] lg:items-end">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor={`header-row-${sheetIndex}`}>
+                        Header row
+                      </Label>
+                      <Input
+                        id={`header-row-${sheetIndex}`}
+                        type="number"
+                        min={1}
+                        max={Math.max(1, sheet.sourceRows.length)}
+                        step={1}
+                        value={
+                          headerRowBySheet[sheet.name] ?? sheet.header.rowNumber
+                        }
+                        onChange={(event) => {
+                          const nextValue = event.currentTarget.valueAsNumber;
+                          if (!Number.isFinite(nextValue)) return;
+                          setHeaderRowBySheet((current) => ({
+                            ...current,
+                            [sheet.name]: nextValue,
+                          }));
+                        }}
+                        aria-describedby={`sheet-settings-help-${sheetIndex}`}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor={`sku-prefix-${sheetIndex}`}>
+                        SKU prefix (optional)
+                      </Label>
+                      <Input
+                        id={`sku-prefix-${sheetIndex}`}
+                        value={skuPrefixBySheet[sheet.name] ?? ''}
+                        placeholder="For example, CLOTHING"
+                        autoComplete="off"
+                        onChange={(event) =>
+                          setSkuPrefixBySheet((current) => ({
+                            ...current,
+                            [sheet.name]: event.target.value,
+                          }))
+                        }
+                        aria-describedby={`sheet-settings-help-${sheetIndex}`}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void applySheetSettings(sheet.name)}
+                    >
+                      Apply and re-analyze
+                    </Button>
+                    <p
+                      id={`sheet-settings-help-${sheetIndex}`}
+                      className="text-xs leading-5 text-muted-foreground sm:col-span-2 lg:col-span-3"
+                    >
+                      Correct the header row when auto-detection chose data. The
+                      optional prefix remains stable across reanalysis and is
+                      applied to both product and variant identifiers from this
+                      sheet.
+                    </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {sheet.header.mappings.map((mapping) => (
@@ -659,9 +797,8 @@ export function BulkImportSection({
                         Publication:{' '}
                         {group.categoryInference.requiresReview
                           ? 'draft'
-                          : (group.rows.find(
-                              (row) => row.values.status != null,
-                            )?.values.status ??
+                          : (group.rows.find((row) => row.values.status != null)
+                              ?.values.status ??
                             'new: draft · existing: unchanged')}
                       </Badge>
                     ) : null}

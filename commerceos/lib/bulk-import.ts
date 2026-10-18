@@ -174,6 +174,7 @@ export type BulkImportParseOptions = {
   mode?: BulkImportMode;
   sheetNames?: string[];
   headerRowBySheet?: Record<string, number>;
+  skuPrefixBySheet?: Record<string, string>;
   columnMappingsBySheet?: Record<
     string,
     Record<string, BulkImportField | 'ignore'>
@@ -211,6 +212,7 @@ const HEADER_ALIASES: Record<BulkImportField, readonly string[]> = {
   sku: [
     'sku',
     'item sku',
+    'item id',
     'variant sku',
     'seller sku',
     'merchant sku',
@@ -251,6 +253,7 @@ const HEADER_ALIASES: Record<BulkImportField, readonly string[]> = {
   ],
   price: [
     'price',
+    'final price',
     'retail price',
     'sale price',
     'selling price',
@@ -270,6 +273,7 @@ const HEADER_ALIASES: Record<BulkImportField, readonly string[]> = {
     'stock',
     'inventory',
     'quantity',
+    'qunatity',
     'qty',
     'on hand',
     'quantity on hand',
@@ -358,6 +362,17 @@ const CATEGORY_HINTS: Partial<Record<string, readonly string[]>> = {
     'jacket',
     'clothing',
     'garment',
+    'kurta',
+    'kurti',
+    'saree',
+    'sari',
+    'salwar',
+    'lehenga',
+    'blouse',
+    'tunic',
+    'coord set',
+    'co ord set',
+    'anarkali',
   ],
   footwear: [
     'shoe',
@@ -373,6 +388,23 @@ const CATEGORY_HINTS: Partial<Record<string, readonly string[]>> = {
     'necklace',
     'bracelet',
     'earring',
+    'earrings',
+    'earings',
+    'ear chain',
+    'pendant',
+    'pendants',
+    'bangle',
+    'bangles',
+    'neck set',
+    'nose pin',
+    'mangalsutra',
+    'anklet',
+    'anklets',
+    'hip belt',
+    'black beads',
+    'beads set',
+    'kanti chain',
+    'tika',
     'jewelry',
     'jewellery',
     'gemstone',
@@ -435,7 +467,19 @@ const CATEGORY_HINTS: Partial<Record<string, readonly string[]>> = {
   ],
   furniture: ['furniture', 'chair', 'table', 'sofa', 'desk', 'mattress'],
   'home-decor': ['decor', 'lamp', 'lighting', 'rug', 'curtain', 'mirror'],
-  'bedding-bath': ['bedding', 'sheet', 'pillow', 'blanket', 'towel', 'bath'],
+  'bedding-bath': [
+    'bedding',
+    'sheet',
+    'bedsheet',
+    'bed sheet',
+    'pillow',
+    'pillowcase',
+    'blanket',
+    'comforter',
+    'duvet',
+    'towel',
+    'bath',
+  ],
   appliances: [
     'appliance',
     'refrigerator',
@@ -614,6 +658,7 @@ const STOP_WORDS = new Set([
 ]);
 
 const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{1,63}$/;
+const SKU_PREFIX_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
 
 export class BulkImportParseError extends Error {
   readonly code: string;
@@ -629,6 +674,8 @@ function canonical(value: string): string {
   return value
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .trim()
     .toLocaleLowerCase()
     .replace(/&/g, ' and ')
@@ -644,6 +691,27 @@ function cellText(value: BulkCellValue | undefined): string {
 
 function normalizedSku(value: string): string {
   return value.normalize('NFKC').trim().toUpperCase();
+}
+
+function normalizedSkuPrefix(value: string | undefined, sheet: string): string {
+  if (!value?.trim()) return '';
+  const prefix = value
+    .normalize('NFKC')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '-')
+    .replace(/[-_.]+$/g, '');
+  if (!SKU_PREFIX_PATTERN.test(prefix)) {
+    throw new BulkImportParseError(
+      'INVALID_SKU_PREFIX',
+      `The SKU prefix for ${sheet} must be 1–32 letters, numbers, dots, dashes, or underscores and must start with a letter or number.`,
+    );
+  }
+  return prefix;
+}
+
+function prefixSku(sku: string, prefix: string): string {
+  return sku && prefix ? `${prefix}-${sku}` : sku;
 }
 
 function issue(
@@ -669,10 +737,13 @@ function matchHeader(header: string): HeaderMatch | null {
   >) {
     const matched = aliases.some((alias) => {
       const candidate = canonical(alias);
-      return (
-        candidate.length >= 6 &&
-        (normalized.includes(candidate) || candidate.includes(normalized))
-      );
+      const sourceLetters = normalized.replace(/[^a-z]/g, '').length;
+      const candidateLetters = candidate.replace(/[^a-z]/g, '').length;
+      if (sourceLetters < 4 || candidateLetters < 4) return false;
+      if (normalized.replaceAll(' ', '') === candidate.replaceAll(' ', '')) {
+        return true;
+      }
+      return ` ${normalized} `.includes(` ${candidate} `);
     });
     if (matched) return { field, confidence: 0.72 };
   }
@@ -717,6 +788,68 @@ function mappingsForHeaders(headers: string[]): BulkColumnMapping[] {
     mapping.optionName = optionName;
   }
   return mappings;
+}
+
+function headerDiagnostics(
+  headers: string[],
+  mappings: BulkColumnMapping[],
+  sheet: string,
+  rowNumber: number,
+): Pick<BulkImportHeader, 'confidence' | 'issues'> {
+  const mappedCount = mappings.filter(
+    (mapping) => mapping.field !== 'ignore',
+  ).length;
+  const confidence =
+    headers.length === 0
+      ? 0
+      : Math.min(1, mappedCount / Math.min(5, headers.length));
+  const issues: BulkImportIssue[] = [];
+  if (mappedCount === 0) {
+    issues.push(
+      issue({
+        severity: 'error',
+        code: 'HEADER_NOT_RECOGNIZED',
+        message: `No supported inventory columns were recognized in ${sheet}.`,
+        scope: 'sheet',
+        sheet,
+        rowNumber,
+      }),
+    );
+  } else if (confidence < 0.5) {
+    issues.push(
+      issue({
+        severity: 'warning',
+        code: 'HEADER_LOW_CONFIDENCE',
+        message: `Review the detected columns for ${sheet} before applying this import.`,
+        scope: 'sheet',
+        sheet,
+        rowNumber,
+      }),
+    );
+  }
+
+  const repeatable = new Set<BulkImportField>(['categoryPath', 'imageUrls']);
+  const fields = new Map<BulkImportField, BulkColumnMapping[]>();
+  for (const mapping of mappings) {
+    if (mapping.field === 'ignore') continue;
+    const values = fields.get(mapping.field) ?? [];
+    values.push(mapping);
+    fields.set(mapping.field, values);
+  }
+  for (const [field, duplicates] of fields) {
+    if (duplicates.length <= 1 || repeatable.has(field)) continue;
+    issues.push(
+      issue({
+        severity: 'warning',
+        code: 'DUPLICATE_COLUMN_MAPPING',
+        message: `${duplicates.map((mapping) => mapping.header).join(', ')} all map to ${field}; the first non-empty value will be used.`,
+        scope: 'sheet',
+        sheet,
+        field,
+      }),
+    );
+  }
+  return { confidence, issues };
 }
 
 function headerCandidateScore(row: BulkCellValue[]): number {
@@ -781,59 +914,12 @@ export function detectBulkImportHeader(
     (value, index) => cellText(value) || `Column ${index + 1}`,
   );
   const mappings = mappingsForHeaders(headers);
-  const mappedCount = mappings.filter(
-    (mapping) => mapping.field !== 'ignore',
-  ).length;
-  const confidence =
-    headers.length === 0
-      ? 0
-      : Math.min(1, mappedCount / Math.min(5, headers.length));
-  const issues: BulkImportIssue[] = [];
-  if (mappedCount === 0) {
-    issues.push(
-      issue({
-        severity: 'error',
-        code: 'HEADER_NOT_RECOGNIZED',
-        message: `No supported inventory columns were recognized in ${sheet}.`,
-        scope: 'sheet',
-        sheet,
-        rowNumber: rowIndex + 1,
-      }),
-    );
-  } else if (confidence < 0.5) {
-    issues.push(
-      issue({
-        severity: 'warning',
-        code: 'HEADER_LOW_CONFIDENCE',
-        message: `Review the detected columns for ${sheet} before applying this import.`,
-        scope: 'sheet',
-        sheet,
-        rowNumber: rowIndex + 1,
-      }),
-    );
-  }
-
-  const repeatable = new Set<BulkImportField>(['categoryPath', 'imageUrls']);
-  const fields = new Map<BulkImportField, BulkColumnMapping[]>();
-  for (const mapping of mappings) {
-    if (mapping.field === 'ignore') continue;
-    const values = fields.get(mapping.field) ?? [];
-    values.push(mapping);
-    fields.set(mapping.field, values);
-  }
-  for (const [field, duplicates] of fields) {
-    if (duplicates.length <= 1 || repeatable.has(field)) continue;
-    issues.push(
-      issue({
-        severity: 'warning',
-        code: 'DUPLICATE_COLUMN_MAPPING',
-        message: `${duplicates.map((mapping) => mapping.header).join(', ')} all map to ${field}; the first non-empty value will be used.`,
-        scope: 'sheet',
-        sheet,
-        field,
-      }),
-    );
-  }
+  const { confidence, issues } = headerDiagnostics(
+    headers,
+    mappings,
+    sheet,
+    rowIndex + 1,
+  );
 
   return { rowNumber: rowIndex + 1, headers, mappings, confidence, issues };
 }
@@ -950,8 +1036,15 @@ function templateTerms(template: ProductTemplate): string[] {
   ];
 }
 
+function containsMeaningfulPhrase(source: string, phrase: string): boolean {
+  if (phrase.replace(/[^a-z]/g, '').length < 4) return false;
+  return ` ${source} `.includes(` ${phrase} `);
+}
+
 function scoreTemplate(template: ProductTemplate, input: CategoryInput) {
   const categoryText = input.sourceCategoryPath.join(' ');
+  const normalizedCategoryText = canonical(categoryText);
+  const normalizedName = canonical(input.name);
   const categoryTokens = tokenSet(categoryText);
   const nameTokens = tokenSet(input.name);
   const descriptionTokens = tokenSet(`${input.description} ${input.brand}`);
@@ -968,9 +1061,15 @@ function scoreTemplate(template: ProductTemplate, input: CategoryInput) {
       if (nameTokens.has(word)) termScore += 3;
       if (descriptionTokens.has(word)) termScore += 1;
     }
-    if (categoryText && canonical(categoryText).includes(normalizedTerm))
+    if (
+      normalizedCategoryText &&
+      containsMeaningfulPhrase(normalizedCategoryText, normalizedTerm)
+    )
       termScore += 10;
-    if (input.name && canonical(input.name).includes(normalizedTerm))
+    if (
+      normalizedName &&
+      containsMeaningfulPhrase(normalizedName, normalizedTerm)
+    )
       termScore += 5;
     if (termScore > 0) evidence.add(term);
     score += termScore;
@@ -1242,6 +1341,7 @@ function normalizeRow(
   header: BulkImportHeader,
   mode: BulkImportMode,
   categoryConfidenceThreshold: number,
+  skuPrefix: string,
 ): BulkImportRow {
   const displayCells = cells.map(cellText);
   const isBlank = displayCells.every((value) => !value);
@@ -1274,18 +1374,15 @@ function normalizeRow(
   const categoryPath = catalogMode
     ? header.mappings
         .filter((mapping) => mapping.field === 'categoryPath')
-        .flatMap((mapping) =>
-          splitCategoryPath(cellText(cells[mapping.index])),
-        )
+        .flatMap((mapping) => splitCategoryPath(cellText(cells[mapping.index])))
         .filter(Boolean)
         .slice(0, 5)
     : [];
+  const priceRaw = catalogMode
+    ? valueForField(cells, header.mappings, 'price')
+    : '';
   const price = catalogMode
-    ? parseMoney(
-        valueForField(cells, header.mappings, 'price'),
-        'price',
-        context,
-      )
+    ? parseMoney(priceRaw, 'price', context)
     : ignoredNumber;
   const compareAt = catalogMode
     ? parseMoney(
@@ -1295,28 +1392,26 @@ function normalizeRow(
       )
     : ignoredNumber;
   const cost = catalogMode
-    ? parseMoney(
-        valueForField(cells, header.mappings, 'cost'),
-        'cost',
-        context,
-      )
+    ? parseMoney(valueForField(cells, header.mappings, 'cost'), 'cost', context)
     : ignoredNumber;
-  const stock = mode !== 'stock_adjustment'
-    ? parseInteger(
-        valueForField(cells, header.mappings, 'stock'),
-        'stock',
-        context,
-        false,
-      )
-    : ignoredNumber;
-  const stockDelta = mode === 'stock_adjustment'
-    ? parseInteger(
-        valueForField(cells, header.mappings, 'stockDelta'),
-        'stockDelta',
-        context,
-        true,
-      )
-    : ignoredNumber;
+  const stock =
+    mode !== 'stock_adjustment'
+      ? parseInteger(
+          valueForField(cells, header.mappings, 'stock'),
+          'stock',
+          context,
+          false,
+        )
+      : ignoredNumber;
+  const stockDelta =
+    mode === 'stock_adjustment'
+      ? parseInteger(
+          valueForField(cells, header.mappings, 'stockDelta'),
+          'stockDelta',
+          context,
+          true,
+        )
+      : ignoredNumber;
   const threshold = catalogMode
     ? parseInteger(
         valueForField(cells, header.mappings, 'lowStockThreshold'),
@@ -1335,13 +1430,17 @@ function normalizeRow(
   );
 
   const parentSku = catalogMode
-    ? normalizedSku(valueForField(cells, header.mappings, 'parentSku'))
+    ? prefixSku(
+        normalizedSku(valueForField(cells, header.mappings, 'parentSku')),
+        skuPrefix,
+      )
     : '';
-  const sku = normalizedSku(valueForField(cells, header.mappings, 'sku'));
+  const sku = prefixSku(
+    normalizedSku(valueForField(cells, header.mappings, 'sku')),
+    skuPrefix,
+  );
   const barcode = catalogMode
-    ? valueForField(cells, header.mappings, 'barcode')
-        .normalize('NFKC')
-        .trim()
+    ? valueForField(cells, header.mappings, 'barcode').normalize('NFKC').trim()
     : '';
   const name = catalogMode
     ? valueForField(cells, header.mappings, 'name').trim()
@@ -1418,6 +1517,18 @@ function normalizeRow(
         message:
           'This row needs a product name or must inherit one from its explicit parent group.',
         field: 'name',
+        ...context,
+      }),
+    );
+  }
+  if (catalogMode && !priceRaw) {
+    rowIssues.push(
+      issue({
+        severity: 'warning',
+        code: 'MISSING_PRICE',
+        message:
+          'No price was provided. Existing SKUs keep their current price; a price is required to create a new SKU.',
+        field: 'price',
         ...context,
       }),
     );
@@ -1507,11 +1618,12 @@ function normalizeRow(
       }),
     );
   }
-  const parentKey = mode === 'catalog_upsert' && parentSku
-    ? `parent:${canonical(parentSku)}`
-    : sku
-      ? `sku:${canonical(sku)}`
-      : `row:${sheet}:${rowNumber}`;
+  const parentKey =
+    mode === 'catalog_upsert' && parentSku
+      ? `parent:${canonical(parentSku)}`
+      : sku
+        ? `sku:${canonical(sku)}`
+        : `row:${sheet}:${rowNumber}`;
   return {
     id: `${sheet}:${rowNumber}`,
     sheet,
@@ -1862,28 +1974,34 @@ export function groupBulkImportRows(
 function applyMappingOverrides(
   header: BulkImportHeader,
   overrides: Record<string, BulkImportField | 'ignore'> | undefined,
+  sheet: string,
 ): BulkImportHeader {
   if (!overrides) return header;
+  const mappings = header.mappings.map((mapping) => {
+    const override =
+      overrides[String(mapping.index)] ??
+      overrides[mapping.header] ??
+      overrides[canonical(mapping.header)];
+    return override
+      ? {
+          ...mapping,
+          field: override,
+          confidence: 1,
+          source: 'override' as const,
+          optionName:
+            override.endsWith('Value') && mapping.optionName == null
+              ? mapping.header
+              : mapping.optionName,
+        }
+      : mapping;
+  });
+  if (header.issues.some((candidate) => candidate.code === 'EMPTY_SHEET')) {
+    return { ...header, mappings };
+  }
   return {
     ...header,
-    mappings: header.mappings.map((mapping) => {
-      const override =
-        overrides[String(mapping.index)] ??
-        overrides[mapping.header] ??
-        overrides[canonical(mapping.header)];
-      return override
-        ? {
-            ...mapping,
-            field: override,
-            confidence: 1,
-            source: 'override' as const,
-            optionName:
-              override.endsWith('Value') && mapping.optionName == null
-                ? mapping.header
-                : mapping.optionName,
-          }
-        : mapping;
-    }),
+    mappings,
+    ...headerDiagnostics(header.headers, mappings, sheet, header.rowNumber),
   };
 }
 
@@ -2225,6 +2343,11 @@ export async function parseBulkImport(
     header = applyMappingOverrides(
       header,
       options.columnMappingsBySheet?.[matrix.name],
+      matrix.name,
+    );
+    const skuPrefix = normalizedSkuPrefix(
+      options.skuPrefixBySheet?.[matrix.name],
+      matrix.name,
     );
     const sourceRows: BulkImportSourceRow[] = matrix.rows.map(
       (cells, index) => {
@@ -2255,6 +2378,7 @@ export async function parseBulkImport(
           header,
           mode,
           threshold,
+          skuPrefix,
         ),
       );
     }

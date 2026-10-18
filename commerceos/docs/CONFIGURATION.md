@@ -158,7 +158,7 @@ Choose one behavior for each file:
 
 | UI mode            | Server kind          | Effect                                                                                                                       | Required row values                                  |
 | ------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Catalog upsert     | `catalog_upsert`     | Creates a product family or updates/appends variants by SKU; an optional stock value becomes the location's on-hand quantity | Unique `sku` and product `name`                      |
+| Catalog upsert     | `catalog_upsert`     | Creates a product family or updates/appends variants by SKU; an optional stock value becomes the location's on-hand quantity | Unique `sku`, product `name`, and `price` for new SKUs |
 | Inventory snapshot | `inventory_snapshot` | Sets the selected location's on-hand quantity to an authoritative count                                                      | Existing `sku` and non-negative whole-number `stock` |
 | Inventory delta    | `inventory_delta`    | Adds a signed quantity to the selected location's current on-hand value                                                      | Existing `sku` and signed whole-number `stockDelta`  |
 
@@ -175,7 +175,17 @@ to three option name/value pairs. Friendly headings such as `Parent SKU`,
 are detected automatically and can be remapped in the review UI. Store SKUs
 and barcodes as text in spreadsheets so leading zeros survive. Image URLs must
 use HTTPS. Money values in uploaded files are decimal currency values; MDCart
-normalizes them to integer cents.
+normalizes them to integer cents. An existing SKU may omit `price` to preserve
+its current selling price; MDCart rejects a new SKU without one instead of
+silently creating a zero-price item.
+
+For multi-sheet workbooks, each sheet exposes an editable header-row number and
+an optional SKU prefix. Use the header override when a supplier places notes or
+preamble rows above the real column names. Use a stable sheet prefix when two
+sheets reuse the same item IDs for different products—for example, prefixing
+`M1` from a Clothing sheet produces `CLOTHING-M1`. Prefixing is explicit, is
+applied to both parent and child SKUs, and should be repeated on later imports
+from the same source.
 
 For deterministic grouping, use the same explicit `parentSku` on every child
 row in a variant family. The parent identifier becomes the product-level SKU

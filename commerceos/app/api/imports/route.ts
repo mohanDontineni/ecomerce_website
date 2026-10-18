@@ -783,6 +783,15 @@ export async function POST(request: Request) {
           );
         }
         const existing = existingBySku.get(values.sku);
+        if (
+          body.kind === 'catalog_upsert' &&
+          values.priceCents == null &&
+          !existing
+        ) {
+          errors.push(
+            'A selling price is required when creating a new SKU. Existing SKUs may omit it to keep their current price.',
+          );
+        }
         const identifier = barcode ? identifierByValue.get(barcode) : null;
         if (identifier && identifier.variant_id !== existing?.id) {
           errors.push('This barcode is already assigned to another variant.');
