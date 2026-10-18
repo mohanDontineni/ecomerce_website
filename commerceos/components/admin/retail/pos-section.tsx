@@ -2,8 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState, type SubmitEvent } from 'react';
 import {
+  ArrowLeft,
   Banknote,
   Barcode,
+  Boxes,
+  ChevronRight,
   CreditCard,
   Loader2,
   Minus,
@@ -52,6 +55,96 @@ type TenderDraft = {
   amount: string;
 };
 
+type PosProductGroup = {
+  key: string;
+  label: string;
+  products: RetailProduct[];
+  skuCount: number;
+  stock: number;
+  minPriceCents: number;
+  maxPriceCents: number;
+  imageUrl?: string | null;
+};
+
+const POS_PAGE_SIZE = 60;
+
+const GENERIC_POS_CATEGORIES = new Set([
+  '',
+  'general',
+  'uncategorized',
+  'other',
+  'others',
+  'misc',
+  'miscellaneous',
+  'custom product',
+  'general retail',
+  'general retail custom product',
+]);
+
+function canonicalGroupValue(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function productGroupIdentity(product: RetailProduct): {
+  key: string;
+  label: string;
+} {
+  const category = product.category?.trim() ?? '';
+  const normalizedCategory = canonicalGroupValue(category);
+  if (category && !GENERIC_POS_CATEGORIES.has(normalizedCategory)) {
+    const categoryPath = product.categoryPath
+      ?.map(canonicalGroupValue)
+      .filter(Boolean)
+      .join('/');
+    return {
+      key: `category:${categoryPath || normalizedCategory}`,
+      label: category,
+    };
+  }
+  const name = product.name.trim();
+  const normalizedName = canonicalGroupValue(name);
+  if (name && !GENERIC_POS_CATEGORIES.has(normalizedName)) {
+    return { key: `name:${normalizedName}`, label: name };
+  }
+  return {
+    key: `product:${product.productId}`,
+    label: name || 'Other item',
+  };
+}
+
+function productMatchesSearch(product: RetailProduct, search: string): boolean {
+  if (!search) return true;
+  return [
+    product.name,
+    product.variantTitle,
+    product.sku,
+    product.barcode,
+    product.category,
+  ].some((value) => value?.toLocaleLowerCase().includes(search));
+}
+
+function specificVariantTitle(product: RetailProduct): string | null {
+  const title = product.variantTitle?.trim();
+  return title && canonicalGroupValue(title) !== 'default' ? title : null;
+}
+
+function sellableItemLabel(product: RetailProduct): string {
+  return specificVariantTitle(product) ?? `Model ${product.sku}`;
+}
+
+function cartItemDetail(product: RetailProduct): string {
+  const variantTitle = specificVariantTitle(product);
+  return variantTitle
+    ? `${variantTitle} · SKU ${product.sku}`
+    : sellableItemLabel(product);
+}
+
 export function PosSection({
   data,
   apiBase,
@@ -62,12 +155,16 @@ export function PosSection({
 }: RetailModuleProps & { locationId: string }) {
   const [registerId, setRegisterId] = useState('');
   const [query, setQuery] = useState('');
+  const [selectedGroupKey, setSelectedGroupKey] = useState('');
+  const [visibleGroupLimit, setVisibleGroupLimit] = useState(POS_PAGE_SIZE);
+  const [visibleItemLimit, setVisibleItemLimit] = useState(POS_PAGE_SIZE);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [shiftDialog, setShiftDialog] = useState<'open' | 'close' | null>(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [tenders, setTenders] = useState<TenderDraft[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const scannerRef = useRef<HTMLInputElement>(null);
   const saleAttempt = useRef<{ signature: string; key: string } | null>(null);
 
   const registers = useMemo(
@@ -85,27 +182,105 @@ export function PosSection({
         : (registers[0]?.id ?? ''),
     );
   }, [registers]);
+  useEffect(() => {
+    setSelectedGroupKey('');
+    setQuery('');
+    setCart([]);
+    setCheckoutOpen(false);
+    setTenders([]);
+    setError('');
+    saleAttempt.current = null;
+  }, [locationId]);
+  useEffect(() => {
+    setVisibleGroupLimit(POS_PAGE_SIZE);
+    setVisibleItemLimit(POS_PAGE_SIZE);
+  }, [query, selectedGroupKey]);
 
   const activeShift = data.shifts.find(
     (shift) => shift.registerId === registerId && shift.status === 'open',
   );
   const location = data.locations.find((item) => item.id === locationId);
   const search = query.trim().toLocaleLowerCase();
-  const filteredProducts = useMemo(
+  const sellableProducts = useMemo(
     () =>
       data.products
-        .filter((product) => product.status !== 'archived' && product.stock > 0)
         .filter(
           (product) =>
-            !search ||
-            product.name.toLocaleLowerCase().includes(search) ||
-            product.sku.toLocaleLowerCase().includes(search) ||
-            product.barcode?.toLocaleLowerCase().includes(search) ||
-            product.category?.toLocaleLowerCase().includes(search),
+            (!product.locationId || product.locationId === locationId) &&
+            product.status !== 'archived' &&
+            product.stock > 0,
         )
-        .slice(0, 60),
-    [data.products, search],
+        .sort(
+          (left, right) =>
+            left.name.localeCompare(right.name, undefined, { numeric: true }) ||
+            left.sku.localeCompare(right.sku, undefined, { numeric: true }),
+        ),
+    [data.products, locationId],
   );
+  const productGroups = useMemo(() => {
+    const grouped = new Map<
+      string,
+      { label: string; products: RetailProduct[] }
+    >();
+    for (const product of sellableProducts) {
+      const identity = productGroupIdentity(product);
+      const group = grouped.get(identity.key);
+      if (group) group.products.push(product);
+      else
+        grouped.set(identity.key, {
+          label: identity.label,
+          products: [product],
+        });
+    }
+    return [...grouped.entries()]
+      .map(([key, group]): PosProductGroup => {
+        const prices = group.products.map((product) => product.priceCents);
+        return {
+          key,
+          label: group.label,
+          products: group.products,
+          skuCount: group.products.length,
+          stock: group.products.reduce(
+            (total, product) => total + product.stock,
+            0,
+          ),
+          minPriceCents: Math.min(...prices),
+          maxPriceCents: Math.max(...prices),
+          imageUrl: group.products.find((product) => product.imageUrl)
+            ?.imageUrl,
+        };
+      })
+      .sort((left, right) =>
+        left.label.localeCompare(right.label, undefined, { numeric: true }),
+      );
+  }, [sellableProducts]);
+  const selectedGroup = productGroups.find(
+    (group) => group.key === selectedGroupKey,
+  );
+  useEffect(() => {
+    if (selectedGroupKey && !selectedGroup) setSelectedGroupKey('');
+  }, [selectedGroup, selectedGroupKey]);
+  const matchingGroups = useMemo(
+    () =>
+      productGroups.filter(
+        (group) =>
+          !search ||
+          group.label.toLocaleLowerCase().includes(search) ||
+          group.products.some((product) =>
+            productMatchesSearch(product, search),
+          ),
+      ),
+    [productGroups, search],
+  );
+  const matchingGroupItems = useMemo(
+    () =>
+      (selectedGroup?.products ?? []).filter((product) =>
+        productMatchesSearch(product, search),
+      ),
+    [search, selectedGroup],
+  );
+  const visibleGroups = matchingGroups.slice(0, visibleGroupLimit);
+  const visibleGroupItems = matchingGroupItems.slice(0, visibleItemLimit);
 
   const subtotalCents = cart.reduce(
     (sum, line) => sum + line.product.priceCents * line.quantity,
@@ -122,7 +297,25 @@ export function PosSection({
   const remainingCents = Math.max(0, totalCents - tenderedCents);
   const changeCents = Math.max(0, tenderedCents - totalCents);
 
+  function focusScanner() {
+    requestAnimationFrame(() => scannerRef.current?.focus());
+  }
+
+  function showAllProductGroups() {
+    setSelectedGroupKey('');
+    setQuery('');
+    focusScanner();
+  }
+
   function addProduct(product: RetailProduct) {
+    if (
+      product.stock <= 0 ||
+      product.status === 'archived' ||
+      (product.locationId && product.locationId !== locationId)
+    ) {
+      notify(product.name + ' is not available at this location.', 'error');
+      return;
+    }
     setCart((lines) => {
       const existing = lines.find(
         (line) => line.product.variantId === product.variantId,
@@ -165,17 +358,31 @@ export function PosSection({
   function handleScanner(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key !== 'Enter' || !search) return;
     event.preventDefault();
-    const exact = data.products.find(
+    const exact = sellableProducts.find(
       (product) =>
         product.sku.toLocaleLowerCase() === search ||
         product.barcode?.toLocaleLowerCase() === search,
     );
-    if (exact) addProduct(exact);
-    else
+    if (exact) {
+      addProduct(exact);
+      return;
+    }
+    const unavailableExact = data.products.some(
+      (product) =>
+        product.sku.toLocaleLowerCase() === search ||
+        product.barcode?.toLocaleLowerCase() === search,
+    );
+    if (unavailableExact) {
+      notify(
+        'That SKU is out of stock or unavailable at this location.',
+        'error',
+      );
+    } else {
       notify(
         'No sellable SKU or barcode matches “' + query.trim() + '”.',
         'error',
       );
+    }
   }
 
   async function saveShift(event: SubmitEvent<HTMLFormElement>) {
@@ -366,54 +573,182 @@ export function PosSection({
               <Barcode className="size-5 text-primary" />
               <span className="sr-only">Scan barcode or search products</span>
               <Input
+                ref={scannerRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={handleScanner}
-                placeholder="Scan barcode or search name, SKU, category…"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && selectedGroup) {
+                    event.preventDefault();
+                    showAllProductGroups();
+                    return;
+                  }
+                  handleScanner(event);
+                }}
+                placeholder={
+                  selectedGroup
+                    ? `Search ${selectedGroup.label} items or scan a barcode…`
+                    : 'Scan a barcode or search product groups and SKUs…'
+                }
                 className="h-auto border-0 bg-transparent p-0 shadow-none focus-visible:ring-0"
               />
               <Search className="size-4 text-muted-foreground" />
             </label>
-            {filteredProducts.length === 0 ? (
+            <output className="sr-only" aria-live="polite">
+              {selectedGroup
+                ? `Showing ${matchingGroupItems.length} items in ${selectedGroup.label}.`
+                : `Showing ${matchingGroups.length} product groups.`}
+            </output>
+
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              {selectedGroup ? (
+                <div className="flex min-w-0 items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={showAllProductGroups}
+                  >
+                    <ArrowLeft /> All products
+                  </Button>
+                  <div className="min-w-0">
+                    <strong className="block truncate text-sm">
+                      {selectedGroup.label}
+                    </strong>
+                    <span className="block text-xs text-muted-foreground">
+                      {selectedGroup.skuCount}{' '}
+                      {selectedGroup.skuCount === 1 ? 'item' : 'items'} ·{' '}
+                      {selectedGroup.stock} in stock
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <strong className="block text-sm">Product groups</strong>
+                  <span className="block text-xs text-muted-foreground">
+                    Choose a product type, then select the exact item or model.
+                  </span>
+                </div>
+              )}
+              <Badge variant="outline">
+                {selectedGroup
+                  ? `${visibleGroupItems.length} of ${matchingGroupItems.length} shown`
+                  : `${visibleGroups.length} of ${matchingGroups.length} groups`}
+              </Badge>
+            </div>
+
+            {(selectedGroup ? visibleGroupItems : visibleGroups).length ===
+            0 ? (
               <RetailEmpty
                 title={
-                  data.products.length
-                    ? 'No matching sellable products'
-                    : 'No products at this location'
+                  sellableProducts.length === 0
+                    ? 'No products at this location'
+                    : selectedGroup
+                      ? `No matching items in ${selectedGroup.label}`
+                      : 'No matching product groups'
                 }
-                description="Inventory with an active SKU and positive stock appears here."
+                description={
+                  sellableProducts.length === 0
+                    ? 'Inventory with an active SKU and positive stock appears here.'
+                    : 'Clear the search or try another product name, SKU, or barcode.'
+                }
               />
+            ) : selectedGroup ? (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-4">
+                {visibleGroupItems.map((product) => {
+                  const variantTitle = specificVariantTitle(product);
+                  const nameMatchesGroup =
+                    canonicalGroupValue(product.name) ===
+                    canonicalGroupValue(selectedGroup.label);
+                  const itemTitle = nameMatchesGroup
+                    ? sellableItemLabel(product)
+                    : product.name;
+                  const itemDetail = nameMatchesGroup
+                    ? variantTitle
+                      ? `SKU ${product.sku}`
+                      : 'Individual inventory item'
+                    : variantTitle
+                      ? `${variantTitle} · SKU ${product.sku}`
+                      : `SKU ${product.sku}`;
+                  return (
+                    <button
+                      type="button"
+                      key={product.variantId}
+                      onClick={() => addProduct(product)}
+                      aria-label={`${itemTitle}, SKU ${product.sku}, ${catalogPrice(product.priceCents, currency)}, ${product.stock} in stock`}
+                      className="group min-h-40 overflow-hidden rounded-xl border bg-background text-left transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <span className="grid aspect-[16/9] place-items-center overflow-hidden bg-muted">
+                        {product.imageUrl ? (
+                          <img
+                            src={product.imageUrl}
+                            alt=""
+                            className="size-full object-cover"
+                          />
+                        ) : (
+                          <Package className="size-7 text-muted-foreground" />
+                        )}
+                      </span>
+                      <span className="block p-3">
+                        <strong className="line-clamp-2 block text-sm">
+                          {itemTitle}
+                        </strong>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">
+                          {itemDetail}
+                        </span>
+                        <span className="mt-3 flex items-center justify-between gap-2 text-sm">
+                          <b>{catalogPrice(product.priceCents, currency)}</b>
+                          <small className="text-muted-foreground">
+                            {product.stock} left
+                          </small>
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             ) : (
               <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-4">
-                {filteredProducts.map((product) => (
+                {visibleGroups.map((group) => (
                   <button
                     type="button"
-                    key={product.variantId}
-                    onClick={() => addProduct(product)}
+                    key={group.key}
+                    onClick={() => {
+                      setSelectedGroupKey(group.key);
+                      focusScanner();
+                    }}
+                    aria-label={`${group.label}, ${group.skuCount} items, ${group.minPriceCents === group.maxPriceCents ? catalogPrice(group.minPriceCents, currency) : `${catalogPrice(group.minPriceCents, currency)} to ${catalogPrice(group.maxPriceCents, currency)}`}, ${group.stock} in stock`}
                     className="group min-h-40 overflow-hidden rounded-xl border bg-background text-left transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="grid aspect-[16/9] place-items-center overflow-hidden bg-muted">
-                      {product.imageUrl ? (
+                      {group.imageUrl ? (
                         <img
-                          src={product.imageUrl}
+                          src={group.imageUrl}
                           alt=""
                           className="size-full object-cover"
                         />
                       ) : (
-                        <Package className="size-7 text-muted-foreground" />
+                        <Boxes className="size-7 text-muted-foreground" />
                       )}
                     </span>
                     <span className="block p-3">
-                      <strong className="line-clamp-2 block text-sm">
-                        {product.name}
-                      </strong>
-                      <span className="mt-1 block truncate text-xs text-muted-foreground">
-                        {product.variantTitle || product.sku}
+                      <span className="flex items-start justify-between gap-2">
+                        <strong className="line-clamp-2 block text-sm">
+                          {group.label}
+                        </strong>
+                        <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-primary" />
+                      </span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {group.skuCount}{' '}
+                        {group.skuCount === 1 ? 'item' : 'items'}
                       </span>
                       <span className="mt-3 flex items-center justify-between gap-2 text-sm">
-                        <b>{catalogPrice(product.priceCents, currency)}</b>
+                        <b>
+                          {group.minPriceCents === group.maxPriceCents
+                            ? catalogPrice(group.minPriceCents, currency)
+                            : `${catalogPrice(group.minPriceCents, currency)}–${catalogPrice(group.maxPriceCents, currency)}`}
+                        </b>
                         <small className="text-muted-foreground">
-                          {product.stock} left
+                          {group.stock} in stock
                         </small>
                       </span>
                     </span>
@@ -421,6 +756,33 @@ export function PosSection({
                 ))}
               </div>
             )}
+            {selectedGroup &&
+            visibleGroupItems.length < matchingGroupItems.length ? (
+              <div className="mt-4 flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    setVisibleItemLimit((limit) => limit + POS_PAGE_SIZE)
+                  }
+                >
+                  Show more items
+                </Button>
+              </div>
+            ) : null}
+            {!selectedGroup && visibleGroups.length < matchingGroups.length ? (
+              <div className="mt-4 flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    setVisibleGroupLimit((limit) => limit + POS_PAGE_SIZE)
+                  }
+                >
+                  Show more product groups
+                </Button>
+              </div>
+            ) : null}
           </section>
 
           <aside className="flex min-h-[620px] flex-col overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-black/5">
@@ -465,7 +827,7 @@ export function PosSection({
                             {line.product.name}
                           </strong>
                           <span className="block truncate text-xs text-muted-foreground">
-                            {line.product.variantTitle || line.product.sku}
+                            {cartItemDetail(line.product)}
                           </span>
                           <div className="mt-2 flex items-center gap-1">
                             <Button
@@ -474,7 +836,7 @@ export function PosSection({
                               onClick={() =>
                                 changeQuantity(line.product.variantId, -1)
                               }
-                              aria-label={'Remove one ' + line.product.name}
+                              aria-label={`Remove one ${line.product.name}, ${cartItemDetail(line.product)}`}
                             >
                               <Minus />
                             </Button>
@@ -488,7 +850,7 @@ export function PosSection({
                                 changeQuantity(line.product.variantId, 1)
                               }
                               disabled={line.quantity >= line.product.stock}
-                              aria-label={'Add one ' + line.product.name}
+                              aria-label={`Add one ${line.product.name}, ${cartItemDetail(line.product)}`}
                             >
                               <Plus />
                             </Button>
@@ -505,9 +867,7 @@ export function PosSection({
                                   ),
                                 )
                               }
-                              aria-label={
-                                'Remove ' + line.product.name + ' from cart'
-                              }
+                              aria-label={`Remove ${line.product.name}, ${cartItemDetail(line.product)} from cart`}
                             >
                               <Trash2 />
                             </Button>

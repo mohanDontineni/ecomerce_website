@@ -313,6 +313,18 @@ function optionalText(value: unknown): string | null {
   return typeof value === 'string' && value.length ? value : null;
 }
 
+function categoryPathValue(value: unknown): string[] | undefined {
+  const segments = Array.isArray(value)
+    ? value.filter(
+        (segment): segment is string =>
+          typeof segment === 'string' && segment.trim().length > 0,
+      )
+    : typeof value === 'string'
+      ? value.split('/').filter(Boolean)
+      : [];
+  return segments.length ? segments : undefined;
+}
+
 export function normalizeRetailOverview(payload: unknown): {
   overview: RetailOverview;
   currency: string;
@@ -404,6 +416,7 @@ export function normalizeRetailOverview(payload: unknown): {
       sku: textValue(row.sku ?? row.product_sku),
       barcode: optionalText(row.barcode),
       category: optionalText(row.category),
+      categoryPath: categoryPathValue(row.categoryPath ?? row.category_path),
       priceCents: numberValue(row.priceCents ?? row.price_cents),
       costCents:
         row.costCents !== undefined || row.cost_cents !== undefined

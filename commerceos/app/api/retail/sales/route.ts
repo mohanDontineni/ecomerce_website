@@ -337,7 +337,7 @@ export async function POST(request: Request) {
            JOIN location_inventory li ON li.variant_id = pv.id
              AND li.location_id = ?
            WHERE pv.id IN (${placeholders})
-             AND pv.status = 'active' AND p.status = 'active'`,
+             AND pv.status = 'active' AND p.status <> 'archived'`,
         )
         .bind(body.locationId, ...quantities.keys())
         .all<SaleVariant>(),

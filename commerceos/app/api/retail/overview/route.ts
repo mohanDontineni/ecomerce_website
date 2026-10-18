@@ -86,6 +86,12 @@ export async function GET(request: Request) {
                   p.category, p.description, p.sku AS product_sku,
                   pv.id AS variant_id, pv.title AS variant_title, pv.sku,
                   pv.status AS variant_status,
+                  (SELECT c.path
+                   FROM product_categories pc
+                   JOIN categories c ON c.id = pc.category_id
+                   WHERE pc.product_id = p.id AND c.status = 'active'
+                   ORDER BY pc.is_primary DESC, c.depth DESC LIMIT 1
+                  ) AS category_path,
                   COALESCE(pv.price_cents, p.price_cents) AS price_cents,
                   COALESCE(pv.cost_cents, p.cost_cents, 0) AS cost_cents,
                   pv.low_stock_threshold,
@@ -297,6 +303,10 @@ export async function GET(request: Request) {
               sku: row.sku,
               barcode: row.barcode,
               category: row.category,
+              categoryPath:
+                typeof row.category_path === 'string'
+                  ? row.category_path.split('/').filter(Boolean)
+                  : undefined,
               priceCents: Number(row.price_cents ?? 0),
               costCents: canReport ? Number(row.cost_cents ?? 0) : undefined,
               stock: Math.max(
