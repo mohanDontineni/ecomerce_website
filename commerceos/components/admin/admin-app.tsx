@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Archive,
   ArrowRight,
   Boxes,
@@ -146,6 +147,21 @@ type OverviewData = {
     pending_orders: number;
   };
 };
+
+type StoreResetResult = {
+  error?: string;
+  code?: string;
+  counts?: {
+    products: number;
+    online_orders: number;
+    retail_sales: number;
+    purchase_orders: number;
+  };
+  uploadsDeleted?: number;
+  mediaCleanupPending?: boolean;
+};
+
+const STORE_RESET_CONFIRMATION = 'DELETE ALL STORE DATA';
 
 type View =
   | 'overview'
@@ -458,6 +474,7 @@ export function AdminApp() {
               )}
               {view === 'settings' && (
                 <SettingsSection
+                  user={user}
                   store={overview.store}
                   refresh={refresh}
                   showNotice={showNotice}
@@ -2131,15 +2148,92 @@ function AppearanceSection({
 }
 
 function SettingsSection({
+  user,
   store,
   refresh,
   showNotice,
 }: {
+  user: AdminUser;
   store: StoreSettings;
   refresh: () => Promise<void>;
   showNotice: (message: string) => void;
 }) {
   const [saving, setSaving] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirmation, setResetConfirmation] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [resetErrorCode, setResetErrorCode] = useState<string | null>(null);
+  const [cleanupRetry, setCleanupRetry] = useState(false);
+
+  function clearResetDialog() {
+    setResetPassword('');
+    setResetConfirmation('');
+    setResetError('');
+    setResetErrorCode(null);
+    setCleanupRetry(false);
+  }
+
+  function changeResetOpen(open: boolean) {
+    if (resetting) return;
+    setResetOpen(open);
+    if (!open) clearResetDialog();
+  }
+
+  async function resetStoreData(event: React.SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (resetConfirmation !== STORE_RESET_CONFIRMATION || !resetPassword) {
+      return;
+    }
+    setResetting(true);
+    setResetError('');
+    setResetErrorCode(null);
+    try {
+      const response = await fetch('/api/admin/reset-store-data', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          confirmation: resetConfirmation,
+          password: resetPassword,
+        }),
+      });
+      const result = (await response.json()) as StoreResetResult;
+      if (!response.ok) {
+        setResetError(result.error ?? 'Store data could not be reset.');
+        setResetErrorCode(result.code ?? null);
+        return;
+      }
+
+      await refresh();
+      const transactionCount =
+        (result.counts?.online_orders ?? 0) +
+        (result.counts?.retail_sales ?? 0) +
+        (result.counts?.purchase_orders ?? 0);
+      if (result.mediaCleanupPending) {
+        setResetError(
+          'Store records were cleared, but some uploaded files still need cleanup. Submit the reset again to retry.',
+        );
+        setCleanupRetry(true);
+        showNotice('Store records cleared. Upload cleanup needs another try.');
+        return;
+      }
+
+      setResetOpen(false);
+      clearResetDialog();
+      showNotice(
+        `Reset complete: ${result.counts?.products ?? 0} products, ${transactionCount} transactions, and ${result.uploadsDeleted ?? 0} uploads deleted.`,
+      );
+    } catch {
+      await refresh();
+      setResetError(
+        'Could not confirm whether the reset completed. The control room was refreshed; review it before trying again.',
+      );
+    } finally {
+      setResetting(false);
+    }
+  }
+
   async function submit(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -2320,6 +2414,133 @@ function SettingsSection({
           </Button>
         </div>
       </form>
+      {user.role === 'owner' && (
+        <section
+          className="settings-danger-zone"
+          aria-labelledby="reset-store-title"
+        >
+          <div className="settings-section-title">
+            <span>
+              <AlertTriangle />
+            </span>
+            <div>
+              <h2 id="reset-store-title">Danger zone</h2>
+              <p>Irreversible tools for starting this store over.</p>
+            </div>
+          </div>
+          <div className="settings-danger-action">
+            <div>
+              <strong>Delete products, uploads, and transactions</strong>
+              <p>
+                Clears the catalog, product and theme uploads, orders, POS
+                sales, purchasing, inventory and import history, register
+                shifts, and transaction replay records.
+              </p>
+              <small>
+                Keeps users, customer profiles, store text, theme colors,
+                categories, suppliers, locations, and registers. Customer
+                order and spending totals return to zero.
+              </small>
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => setResetOpen(true)}
+            >
+              <Trash2 /> Reset store data
+            </Button>
+          </div>
+        </section>
+      )}
+      <Dialog open={resetOpen} onOpenChange={changeResetOpen}>
+        <DialogContent showCloseButton={!resetting}>
+          <form onSubmit={resetStoreData} aria-busy={resetting}>
+            <DialogHeader>
+              <DialogTitle>Reset all store data?</DialogTitle>
+              <DialogDescription>
+                This permanently deletes the complete catalog, all managed
+                uploads, and all ecommerce and in-store transaction history.
+                It does not refund or cancel charges at an external payment
+                provider. Export any records you must retain for accounting or
+                tax purposes before continuing.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="reset-store-confirmation">
+              <div>
+                <Label htmlFor="reset-owner-password">Current password</Label>
+                <Input
+                  id="reset-owner-password"
+                  type="password"
+                  value={resetPassword}
+                  onChange={(event) => setResetPassword(event.target.value)}
+                  autoComplete="current-password"
+                  aria-invalid={resetErrorCode === 'INVALID_PASSWORD'}
+                  aria-describedby={resetError ? 'reset-store-error' : undefined}
+                  disabled={resetting}
+                  required
+                />
+              </div>
+              <div>
+                <Label htmlFor="reset-confirmation">
+                  Type <code>{STORE_RESET_CONFIRMATION}</code> to confirm
+                </Label>
+                <Input
+                  id="reset-confirmation"
+                  value={resetConfirmation}
+                  onChange={(event) =>
+                    setResetConfirmation(event.target.value)
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={
+                    resetErrorCode === 'CONFIRMATION_MISMATCH'
+                  }
+                  aria-describedby={resetError ? 'reset-store-error' : undefined}
+                  disabled={resetting}
+                  required
+                />
+              </div>
+              {resetError && (
+                <p
+                  id="reset-store-error"
+                  className="reset-store-error"
+                  role="alert"
+                >
+                  {resetError}
+                </p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => changeResetOpen(false)}
+                disabled={resetting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={
+                  resetting ||
+                  !resetPassword ||
+                  resetConfirmation !== STORE_RESET_CONFIRMATION
+                }
+              >
+                <Trash2 />{' '}
+                {resetting
+                  ? cleanupRetry
+                    ? 'Retrying cleanup…'
+                    : 'Deleting…'
+                  : cleanupRetry
+                    ? 'Retry upload cleanup'
+                    : 'Delete store data'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

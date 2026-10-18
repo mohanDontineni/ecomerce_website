@@ -7,7 +7,7 @@ The application lives in [`commerceos`](./commerceos).
 ## Highlights
 
 - Responsive storefront, product galleries, guest cart, mock checkout, customer account, and order history
-- Admin dashboard for catalog, stock, orders, customers, staff invitations, store content, and appearance
+- Admin dashboard for catalog, stock, orders, customers, staff invitations, store content, appearance, and an owner-protected clean-slate data reset
 - D1-backed data with checked-in Drizzle migrations and R2-backed product/background media
 - Secure session cookies, PBKDF2 password hashing, one-time verification tokens, audit events, and idempotent checkout
 - Default demo login `admin` / `admin`, with mandatory password replacement and owner email verification before administration is unlocked

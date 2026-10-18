@@ -7,7 +7,7 @@ MDCart is a reference implementation rather than a turnkey regulated-commerce se
 ## Included modules
 
 - **Storefront:** department/category discovery, specification-aware search, grouped product details, image galleries, option selection, variant-aware cart and checkout, customer account, and order history
-- **Control center:** overview, reusable category paths, 50+ grouped retail product templates, up to three configurable option dimensions, grouped public/internal specifications, per-variant SKUs and inventory, multi-image uploads, stock ledger, order workflow, customer status, team invitations and roles, store copy/settings, audit log, and appearance studio
+- **Control center:** overview, reusable category paths, 50+ grouped retail product templates, up to three configurable option dimensions, grouped public/internal specifications, per-variant SKUs and inventory, multi-image uploads, stock ledger, order workflow, customer status, team invitations and roles, store copy/settings, audit log, appearance studio, and an owner-only clean-slate reset
 - **Retail hub:** location-aware inventory and movement ledger, registers and cash shifts, barcode/SKU point of sale, receipt-level sales history and full refunds, suppliers, purchase orders, partial receiving, and review-first bulk catalog/inventory imports
 - **Identity:** session cookies, PBKDF2 password hashing, forced bootstrap-password replacement, email verification, team invitations, logout, and server-side route guards
 - **Customization:** 12 palettes × 6 moods × 4 shape systems for 288 maintained combinations, custom colors, background/poster assets, overlay control, preview, publishing, and version history
@@ -46,6 +46,12 @@ pnpm db:generate
 ```
 
 Database structure is migration-owned. Runtime initialization inserts only required store and theme defaults with `INSERT OR IGNORE`; new catalogs start empty.
+
+## Clean-slate store reset
+
+The store owner can open **Store settings → Danger zone** to delete every product, managed product/theme upload, online order, POS sale, purchase order, inventory movement, import job, register shift, and transaction idempotency record. The action requires the owner's current password plus the exact confirmation phrase shown in the dialog.
+
+The reset preserves user and team accounts, customer profiles, store copy, theme colors, categories, suppliers, locations, and registers; customer order and spending totals return to zero. It also retains security and configuration audit history and adds one aggregate reset event, while removing catalog and transaction audit details. Export records required for accounting or tax retention first. Deleting MDCart's local payment record does not refund or cancel an external payment-provider charge.
 
 ## Configuration and deployment
 
