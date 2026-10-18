@@ -428,6 +428,19 @@ const CATEGORY_HINTS: Partial<Record<string, readonly string[]>> = {
     'suitcase',
     'duffel',
   ],
+  'fashion-accessories': [
+    'hair accessory',
+    'hair accessories',
+    'hair acce',
+    'hair clip',
+    'hair clips',
+    'hair pin',
+    'hair pins',
+    'hair band',
+    'hair bands',
+    'headband',
+    'headbands',
+  ],
   'consumer-electronics': [
     'electronic',
     'device',
@@ -645,6 +658,225 @@ const CATEGORY_HINTS: Partial<Record<string, readonly string[]>> = {
     'preowned',
   ],
 };
+
+type JewelrySubtypeRule = {
+  label: string;
+  terms: readonly string[];
+  /**
+   * Ambiguous terms that are safe only when they are the complete product
+   * name. They never match a description or part of a longer name.
+   */
+  exactNameTerms?: readonly string[];
+};
+
+type JewelrySubtypeMatch = {
+  rule: JewelrySubtypeRule;
+  confidence: number;
+  evidence: string[];
+  score: number;
+};
+
+// These are product-type terms, not materials or merchandising adjectives.
+// Keep broad words such as "fancy", "designer", "traditional", and "gold"
+// out of this list so they cannot create a subtype on their own.
+const JEWELRY_SUBTYPE_RULES: readonly JewelrySubtypeRule[] = [
+  {
+    label: 'Bangles',
+    terms: [
+      'bangle bracelet',
+      'bangle bracelets',
+      'bangle set',
+      'bangle sets',
+      'kada bangle',
+      'kada bangles',
+      'bangle',
+      'bangles',
+      'kada',
+      'kadas',
+    ],
+  },
+  {
+    label: 'Bracelets',
+    terms: [
+      'charm bracelet',
+      'charm bracelets',
+      'cuff bracelet',
+      'cuff bracelets',
+      'bracelet',
+      'bracelets',
+    ],
+  },
+  {
+    label: 'Earrings',
+    terms: [
+      'ear studs',
+      'ear stud',
+      'ear rings',
+      'ear ring',
+      'ear chains',
+      'ear chain',
+      'earchains',
+      'earchain',
+      'earrings',
+      'earring',
+      'earings',
+      'earing',
+      'jhumkas',
+      'jhumka',
+      'jhumkis',
+      'jhumki',
+    ],
+  },
+  {
+    label: 'Necklaces',
+    terms: [
+      'choker necklace',
+      'choker necklaces',
+      'necklace set',
+      'necklace sets',
+      'neck sets',
+      'neck set',
+      'necksets',
+      'neckset',
+      'necklaces',
+      'necklace',
+    ],
+  },
+  {
+    label: 'Pendants',
+    terms: [
+      'pendant sets',
+      'pendant set',
+      'pendant threads',
+      'pendant thread',
+      'pendantthread',
+      'pedant chains',
+      'pedant chain',
+      'pedantchains',
+      'pedantchain',
+      'pendants',
+      'pendant',
+    ],
+  },
+  {
+    label: 'Rings',
+    terms: [
+      'engagement rings',
+      'engagement ring',
+      'wedding rings',
+      'wedding ring',
+      'signet rings',
+      'signet ring',
+      'cocktail rings',
+      'cocktail ring',
+      'finger rings',
+      'finger ring',
+      'jewelry rings',
+      'jewelry ring',
+      'jewellery rings',
+      'jewellery ring',
+    ],
+    exactNameTerms: ['rings', 'ring'],
+  },
+  {
+    label: 'Anklets',
+    terms: ['anklets', 'anklet', 'payals', 'payal'],
+  },
+  {
+    label: 'Nose jewelry',
+    terms: [
+      'nose pins',
+      'nose pin',
+      'nos pins',
+      'nos pin',
+      'nospins',
+      'nospin',
+      'nose rings',
+      'nose ring',
+    ],
+  },
+  {
+    label: 'Mangalsutras',
+    terms: [
+      'mangalsutra sets',
+      'mangalsutra set',
+      'mangalsutras',
+      'mangalsutra',
+    ],
+  },
+  {
+    label: 'Jewelry sets',
+    terms: [
+      'bridal jewelry sets',
+      'bridal jewelry set',
+      'bridal jewellery sets',
+      'bridal jewellery set',
+      'jewelry sets',
+      'jewelry set',
+      'jewellery sets',
+      'jewellery set',
+    ],
+    exactNameTerms: ['jali sets', 'jali set'],
+  },
+  {
+    label: 'Beads & beaded jewelry',
+    terms: [
+      'black beads sets',
+      'black beads set',
+      'black beads',
+      'beads sets',
+      'beads set',
+      'bead sets',
+      'bead set',
+      'beaded jewelry',
+      'beaded jewellery',
+    ],
+    exactNameTerms: ['beads', 'bead'],
+  },
+  {
+    label: 'Malas',
+    terms: [
+      'beaded malas',
+      'beaded mala',
+      'jewelry malas',
+      'jewelry mala',
+      'jewellery malas',
+      'jewellery mala',
+    ],
+    exactNameTerms: ['malas', 'mala'],
+  },
+  {
+    label: 'Chains',
+    terms: [
+      'jewelry chains',
+      'jewelry chain',
+      'jewellery chains',
+      'jewellery chain',
+      'neck chains',
+      'neck chain',
+      'kanti chains',
+      'kanti chain',
+    ],
+  },
+  {
+    label: 'Waist jewelry',
+    terms: [
+      'waist chains',
+      'waist chain',
+      'hip belts',
+      'hip belt',
+      'kamarbands',
+      'kamarband',
+      'kamarbandhs',
+      'kamarbandh',
+    ],
+  },
+  {
+    label: 'Maang tikka',
+    terms: ['maang tikkas', 'maang tikka', 'mang tikkas', 'mang tikka'],
+    exactNameTerms: ['tikkas', 'tikka', 'tikas', 'tika'],
+  },
+];
 
 const STOP_WORDS = new Set([
   'a',
@@ -1156,6 +1388,149 @@ function containsMeaningfulPhrase(source: string, phrase: string): boolean {
   return ` ${source} `.includes(` ${phrase} `);
 }
 
+function taxonomyCanonical(value: string): string {
+  return canonical(value)
+    .replace(/([a-z])([0-9])/g, '$1 $2')
+    .replace(/([0-9])([a-z])/g, '$1 $2');
+}
+
+function inferJewelrySubtype(input: CategoryInput): JewelrySubtypeMatch | null {
+  const normalizedName = taxonomyCanonical(input.name);
+  const sources = [
+    {
+      label: 'source category',
+      text: taxonomyCanonical(input.sourceCategoryPath.join(' ')),
+      score: 300,
+      confidence: 0.99,
+    },
+    {
+      label: 'product name',
+      text: taxonomyCanonical(input.name),
+      score: 200,
+      confidence: 0.93,
+    },
+    {
+      label: 'description',
+      text: taxonomyCanonical(input.description),
+      score: 100,
+      confidence: 0.68,
+    },
+  ].filter((source) => source.text);
+  const matches: JewelrySubtypeMatch[] = [];
+
+  for (const rule of JEWELRY_SUBTYPE_RULES) {
+    let score = 0;
+    let confidence = 0;
+    const evidence = new Set<string>();
+    for (const term of rule.terms) {
+      const normalizedTerm = taxonomyCanonical(term);
+      const termWords = normalizedTerm.split(' ').filter(Boolean).length;
+      const specificity =
+        termWords * 4 +
+        Math.min(12, normalizedTerm.replace(/[^a-z0-9]/g, '').length);
+      for (const source of sources) {
+        if (!containsMeaningfulPhrase(source.text, normalizedTerm)) continue;
+        const exact = source.text === normalizedTerm;
+        const matchScore = source.score + specificity + (exact ? 25 : 0);
+        if (matchScore > score) {
+          score = matchScore;
+          confidence =
+            source.label === 'product name' && exact
+              ? 0.98
+              : source.label === 'product name' && termWords > 1
+                ? 0.96
+                : source.confidence;
+        }
+        evidence.add(`${term} (${source.label})`);
+      }
+    }
+    for (const term of rule.exactNameTerms ?? []) {
+      const normalizedTerm = taxonomyCanonical(term);
+      if (!normalizedName || normalizedName !== normalizedTerm) continue;
+      const termWords = normalizedTerm.split(' ').filter(Boolean).length;
+      const specificity =
+        termWords * 4 +
+        Math.min(12, normalizedTerm.replace(/[^a-z0-9]/g, '').length);
+      const matchScore = 200 + specificity + 25;
+      if (matchScore > score) {
+        score = matchScore;
+        confidence = 0.98;
+      }
+      evidence.add(`${term} (exact product name)`);
+    }
+    if (score > 0) {
+      matches.push({
+        rule,
+        confidence,
+        evidence: [...evidence].slice(0, 4),
+        score,
+      });
+    }
+  }
+
+  matches.sort(
+    (left, right) =>
+      right.score - left.score ||
+      left.rule.label.localeCompare(right.rule.label),
+  );
+  if (!matches[0]) return null;
+  if (matches[1] && matches[0].score - matches[1].score < 6) return null;
+  return matches[0];
+}
+
+function categoryPathWithJewelrySubtype(
+  template: ProductTemplate,
+  explicitPath: string[],
+  subtype: JewelrySubtypeMatch | null,
+): string[] {
+  if (!subtype) {
+    return explicitPath.length > 0
+      ? explicitPath
+      : template.categoryPath.length > 0
+        ? template.categoryPath
+        : ['General'];
+  }
+
+  const explicitText = taxonomyCanonical(explicitPath.join(' '));
+  const explicitlyJewelry =
+    containsMeaningfulPhrase(explicitText, 'jewelry') ||
+    containsMeaningfulPhrase(explicitText, 'jewellery');
+  const explicitlySubtype = [
+    ...subtype.rule.terms,
+    ...(subtype.rule.exactNameTerms ?? []),
+  ].some((term) =>
+    containsMeaningfulPhrase(explicitText, taxonomyCanonical(term)),
+  );
+  if (explicitPath.length > 0 && !explicitlyJewelry && !explicitlySubtype) {
+    return explicitPath;
+  }
+
+  const genericSegments = new Set([
+    'fashion',
+    'jewelry',
+    'jewellery',
+    'fine and fashion jewelry',
+    'fine and fashion jewellery',
+    'jewelry products',
+    'jewellery products',
+  ]);
+  if (explicitPath.length > 0 && explicitlyJewelry) {
+    const merchantSpecificSegments = explicitPath.filter(
+      (segment) => !genericSegments.has(canonical(segment)),
+    );
+    if (merchantSpecificSegments.length > 0) return explicitPath.slice(0, 5);
+  }
+
+  const jewelryIndex = template.categoryPath.findIndex((segment) =>
+    ['jewelry', 'jewellery'].includes(canonical(segment)),
+  );
+  const jewelryRoot =
+    jewelryIndex >= 0
+      ? template.categoryPath.slice(0, jewelryIndex + 1)
+      : template.categoryPath.slice(0, 2);
+  return [...jewelryRoot.slice(0, 4), subtype.rule.label];
+}
+
 function scoreTemplate(template: ProductTemplate, input: CategoryInput) {
   const categoryText = input.sourceCategoryPath.join(' ');
   const normalizedCategoryText = canonical(categoryText);
@@ -1205,27 +1580,72 @@ export function inferBulkImportCategory(
         right.score - left.score ||
         left.template.label.localeCompare(right.template.label),
     );
-  const best = candidates[0];
-  const runnerUp = candidates[1];
   const explicitPath = input.sourceCategoryPath.filter(Boolean).slice(0, 5);
+  const detectedJewelrySubtype = inferJewelrySubtype(input);
+  const jewelryCandidate = candidates.find(
+    (candidate) => candidate.template.id === 'jewelry',
+  );
+  const explicitText = taxonomyCanonical(explicitPath.join(' '));
+  const explicitSupportsJewelry =
+    explicitPath.length === 0 ||
+    containsMeaningfulPhrase(explicitText, 'jewelry') ||
+    containsMeaningfulPhrase(explicitText, 'jewellery') ||
+    Boolean(
+      detectedJewelrySubtype &&
+      [
+        ...detectedJewelrySubtype.rule.terms,
+        ...(detectedJewelrySubtype.rule.exactNameTerms ?? []),
+      ].some((term) =>
+        containsMeaningfulPhrase(explicitText, taxonomyCanonical(term)),
+      ),
+    );
+  const subtypePromotesJewelry = Boolean(
+    jewelryCandidate &&
+    detectedJewelrySubtype &&
+    detectedJewelrySubtype.confidence >= 0.96 &&
+    explicitSupportsJewelry,
+  );
+  let best = candidates[0];
+  let runnerUp = candidates[1];
+  if (
+    subtypePromotesJewelry &&
+    jewelryCandidate &&
+    best?.template.id !== 'jewelry'
+  ) {
+    runnerUp = best;
+    best = jewelryCandidate;
+  }
+  const jewelrySubtype =
+    best?.template.id === 'jewelry' ? detectedJewelrySubtype : null;
 
   if (explicitPath.length > 0) {
     const matched =
-      best && best.score > 0 ? best.template : DEFAULT_PRODUCT_TEMPLATE;
+      best && (best.score > 0 || subtypePromotesJewelry)
+        ? best.template
+        : DEFAULT_PRODUCT_TEMPLATE;
+    const subtype = matched.id === 'jewelry' ? jewelrySubtype : null;
     return {
       templateId: matched.id,
       templateLabel: matched.label,
-      categoryPath: explicitPath,
-      confidence: best?.score ? 0.98 : 0.9,
+      categoryPath:
+        matched.id === 'jewelry'
+          ? categoryPathWithJewelrySubtype(matched, explicitPath, subtype)
+          : explicitPath,
+      confidence: Math.max(best?.score ? 0.98 : 0.9, subtype?.confidence ?? 0),
       source: 'source',
-      evidence: best?.evidence ?? explicitPath,
+      evidence: [
+        ...new Set([
+          ...(subtype?.evidence ?? []),
+          ...(best?.evidence ?? explicitPath),
+        ]),
+      ].slice(0, 8),
       runnerUpTemplateId: runnerUp?.score ? runnerUp.template.id : undefined,
       requiresReview: Boolean(matched.complianceNote),
       complianceNote: matched.complianceNote,
     };
   }
 
-  if (!best || best.score <= 0) {
+  if (!best || (best.score <= 0 && !subtypePromotesJewelry)) {
     return {
       templateId: DEFAULT_PRODUCT_TEMPLATE.id,
       templateLabel: DEFAULT_PRODUCT_TEMPLATE.label,
@@ -1238,29 +1658,41 @@ export function inferBulkImportCategory(
   }
 
   const margin = best.score - (runnerUp?.score ?? 0);
-  const confidence = Math.min(
+  const templateConfidence = Math.min(
     0.99,
     0.42 +
       (best.score / (best.score + 18)) * 0.48 +
       Math.min(0.09, margin / 100),
+  );
+  const confidence = Math.max(
+    templateConfidence,
+    jewelrySubtype?.confidence ?? 0,
   );
   const complianceNote =
     best.template.complianceNote &&
     (confidence >= confidenceThreshold || (best.score >= 15 && margin >= 3))
       ? best.template.complianceNote
       : undefined;
+  const decisiveSubtype =
+    jewelrySubtype != null && jewelrySubtype.confidence >= confidenceThreshold;
   const requiresReview =
-    confidence < confidenceThreshold || margin < 3 || Boolean(complianceNote);
+    confidence < confidenceThreshold ||
+    (!decisiveSubtype && margin < 3) ||
+    Boolean(complianceNote);
   return {
     templateId: best.template.id,
     templateLabel: best.template.label,
     categoryPath:
-      best.template.categoryPath.length > 0
-        ? best.template.categoryPath
-        : ['General'],
+      best.template.id === 'jewelry'
+        ? categoryPathWithJewelrySubtype(best.template, [], jewelrySubtype)
+        : best.template.categoryPath.length > 0
+          ? best.template.categoryPath
+          : ['General'],
     confidence,
     source: 'inferred',
-    evidence: best.evidence,
+    evidence: [
+      ...new Set([...(jewelrySubtype?.evidence ?? []), ...best.evidence]),
+    ].slice(0, 8),
     runnerUpTemplateId: runnerUp?.template.id,
     requiresReview,
     complianceNote,

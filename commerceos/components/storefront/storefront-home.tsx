@@ -471,6 +471,7 @@ export function StorefrontHome({ data }: { data: StorefrontPayload }) {
                     <h3>
                       <a href={`/product/${product.slug}`}>{product.name}</a>
                     </h3>
+                    <span>Model {product.sku}</span>
                   </div>
                   <strong>
                     {product.minPriceCents === product.maxPriceCents
