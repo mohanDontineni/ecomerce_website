@@ -31,7 +31,7 @@ import {
 } from '@/components/ui/native-select';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
-import { money } from '@/lib/domain';
+import { catalogPrice, money } from '@/lib/domain';
 import { RetailEmpty, RetailSectionHeading } from './shared';
 import {
   cents,
@@ -411,7 +411,7 @@ export function PosSection({
                         {product.variantTitle || product.sku}
                       </span>
                       <span className="mt-3 flex items-center justify-between gap-2 text-sm">
-                        <b>{money(product.priceCents, currency)}</b>
+                        <b>{catalogPrice(product.priceCents, currency)}</b>
                         <small className="text-muted-foreground">
                           {product.stock} left
                         </small>
@@ -514,7 +514,7 @@ export function PosSection({
                           </div>
                         </div>
                         <strong className="text-sm">
-                          {money(
+                          {catalogPrice(
                             line.product.priceCents * line.quantity,
                             currency,
                           )}

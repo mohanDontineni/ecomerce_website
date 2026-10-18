@@ -158,7 +158,7 @@ Choose one behavior for each file:
 
 | UI mode            | Server kind          | Effect                                                                                                                       | Required row values                                  |
 | ------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Catalog upsert     | `catalog_upsert`     | Creates a product family or updates/appends variants by SKU; an optional stock value becomes the location's on-hand quantity | Unique `sku`, product `name`, and `price` for new SKUs |
+| Catalog upsert     | `catalog_upsert`     | Creates a product family or updates/appends variants by SKU; an optional stock value becomes the location's on-hand quantity | Unique `sku` and product `name`; a blank price creates a free item |
 | Inventory snapshot | `inventory_snapshot` | Sets the selected location's on-hand quantity to an authoritative count                                                      | Existing `sku` and non-negative whole-number `stock` |
 | Inventory delta    | `inventory_delta`    | Adds a signed quantity to the selected location's current on-hand value                                                      | Existing `sku` and signed whole-number `stockDelta`  |
 
@@ -175,17 +175,20 @@ to three option name/value pairs. Friendly headings such as `Parent SKU`,
 are detected automatically and can be remapped in the review UI. Store SKUs
 and barcodes as text in spreadsheets so leading zeros survive. Image URLs must
 use HTTPS. Money values in uploaded files are decimal currency values; MDCart
-normalizes them to integer cents. An existing SKU may omit `price` to preserve
-its current selling price; MDCart rejects a new SKU without one instead of
-silently creating a zero-price item.
+normalizes them to integer cents. A blank `price` is normalized to zero for both
+new and existing SKUs, and the catalog labels the item `Free`. Supply the
+current price in a catalog upsert when it should remain unchanged, or use an
+inventory-only mode when the file should update stock without touching price.
 
 For multi-sheet workbooks, each sheet exposes an editable header-row number and
 an optional SKU prefix. Use the header override when a supplier places notes or
-preamble rows above the real column names. Use a stable sheet prefix when two
-sheets reuse the same item IDs for different products—for example, prefixing
-`M1` from a Clothing sheet produces `CLOTHING-M1`. Prefixing is explicit, is
-applied to both parent and child SKUs, and should be repeated on later imports
-from the same source.
+preamble rows above the real column names. During review, MDCart automatically
+namespaces item IDs that collide across sheets when the rows describe different
+products—for example, `M1` from a Clothing sheet becomes `CLOTHING-M1`. The
+same file produces the same IDs on later imports. An explicit sheet prefix
+overrides automatic namespacing and is applied to both parent and child SKUs.
+Same-sheet duplicates and exact duplicate records remain blocking errors so
+that inventory cannot be applied twice accidentally.
 
 For deterministic grouping, use the same explicit `parentSku` on every child
 row in a variant family. The parent identifier becomes the product-level SKU

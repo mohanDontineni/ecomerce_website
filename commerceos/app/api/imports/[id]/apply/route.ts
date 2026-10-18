@@ -458,7 +458,7 @@ function catalogConfiguration(rows: NormalizedImport[]): {
             ?.value.trim() ?? '',
       ),
       sku: row.values.sku,
-      priceCents: row.values.priceCents ?? base.priceCents,
+      priceCents: row.values.priceCents ?? 0,
       compareAtCents: row.values.compareAtCents ?? null,
       costCents: row.values.costCents ?? null,
       stock: 0,
@@ -474,12 +474,6 @@ async function createProductGroup(rows: NormalizedImport[], now: string) {
   const values = first.values;
   const name = values.name?.trim();
   if (!name) throw new RetailInputError('Imported products require a name.');
-  const missingPrice = rows.find((row) => row.values.priceCents == null);
-  if (missingPrice) {
-    throw new RetailInputError(
-      `A selling price is required to create SKU ${missingPrice.values.sku}.`,
-    );
-  }
   const { configuration, base } = catalogConfiguration(rows);
   const db = database();
   const skus = [
@@ -584,11 +578,6 @@ async function createVariantForProduct(
   importRowId: string,
   now: string,
 ): Promise<VariantRecord> {
-  if (row.values.priceCents == null) {
-    throw new RetailInputError(
-      `A selling price is required to create SKU ${row.values.sku}.`,
-    );
-  }
   const db = database();
   const existingOptions = await db
     .prepare(
@@ -672,7 +661,7 @@ async function createVariantForProduct(
         optionValues.map(({ value }) => value).join(' / '),
         row.values.sku,
         signature,
-        row.values.priceCents ?? null,
+        row.values.priceCents ?? 0,
         row.values.compareAtCents ?? null,
         row.values.costCents ?? null,
         row.values.lowStockThreshold ?? 5,

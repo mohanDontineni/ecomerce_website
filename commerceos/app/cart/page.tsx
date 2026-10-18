@@ -11,7 +11,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { money } from '@/lib/domain';
+import { catalogPrice, money } from '@/lib/domain';
 import { useCart } from '@/components/storefront/cart-context';
 import { useStorePresentation } from '@/hooks/use-store-presentation';
 
@@ -82,7 +82,7 @@ export default function CartPage() {
                     </div>
                   </div>
                   <div className="cart-page-line-total">
-                    <strong>{money(line.priceCents * line.quantity, storeCurrency)}</strong>
+                    <strong>{catalogPrice(line.priceCents * line.quantity, storeCurrency)}</strong>
                     <Button
                       size="icon-sm"
                       variant="ghost"

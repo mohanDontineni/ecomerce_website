@@ -18,7 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { StorefrontPayload, StorefrontProduct } from '@/lib/domain';
-import { money } from '@/lib/domain';
+import { catalogPrice, money } from '@/lib/domain';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -360,8 +360,8 @@ export function StorefrontHome({ data }: { data: StorefrontPayload }) {
                 </div>
                 <span className="price-pill">
                   {featured.minPriceCents === featured.maxPriceCents
-                    ? money(featured.minPriceCents, data.store.currency)
-                    : `From ${money(featured.minPriceCents, data.store.currency)}`}
+                    ? catalogPrice(featured.minPriceCents, data.store.currency)
+                    : `From ${catalogPrice(featured.minPriceCents, data.store.currency)}`}
                 </span>
               </div>
             </div>
@@ -474,8 +474,8 @@ export function StorefrontHome({ data }: { data: StorefrontPayload }) {
                   </div>
                   <strong>
                     {product.minPriceCents === product.maxPriceCents
-                      ? money(product.minPriceCents, data.store.currency)
-                      : `${money(product.minPriceCents, data.store.currency)}+`}
+                      ? catalogPrice(product.minPriceCents, data.store.currency)
+                      : `${catalogPrice(product.minPriceCents, data.store.currency)}+`}
                   </strong>
                 </div>
               </article>
@@ -602,7 +602,7 @@ function CartSheet({
                   </div>
                 </div>
                 <div className="cart-line-price">
-                  <strong>{money(line.priceCents * line.quantity, currency)}</strong>
+                  <strong>{catalogPrice(line.priceCents * line.quantity, currency)}</strong>
                   <Button
                     size="icon-xs"
                     variant="ghost"

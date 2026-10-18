@@ -174,7 +174,17 @@ export type BulkImportParseOptions = {
   mode?: BulkImportMode;
   sheetNames?: string[];
   headerRowBySheet?: Record<string, number>;
+  /**
+   * Explicit per-sheet namespaces applied to every SKU and parent SKU in the
+   * sheet. Explicit prefixes take priority over automatic collision handling.
+   */
   skuPrefixBySheet?: Record<string, string>;
+  /**
+   * Opt in to namespacing non-identical SKU records that collide across sheets.
+   * Same-sheet duplicates and repeated stable product identities across sheets
+   * are left for review instead of being silently changed.
+   */
+  autoResolveCrossSheetSkuCollisions?: boolean;
   columnMappingsBySheet?: Record<
     string,
     Record<string, BulkImportField | 'ignore'>
@@ -790,6 +800,108 @@ function mappingsForHeaders(headers: string[]): BulkColumnMapping[] {
   return mappings;
 }
 
+const NUMERIC_IMPORT_FIELDS = new Set<BulkImportField>([
+  'price',
+  'compareAtPrice',
+  'cost',
+  'stock',
+  'stockDelta',
+  'lowStockThreshold',
+]);
+const IDENTIFIER_IMPORT_FIELDS = new Set<BulkImportField>([
+  'parentSku',
+  'sku',
+  'barcode',
+]);
+
+function comparableDuplicateCell(
+  value: BulkCellValue | undefined,
+  field: BulkImportField,
+): string {
+  const text = cellText(value);
+  if (!text) return '';
+  if (IDENTIFIER_IMPORT_FIELDS.has(field)) {
+    return `identifier:${text.normalize('NFKC').toUpperCase()}`;
+  }
+  if (NUMERIC_IMPORT_FIELDS.has(field)) {
+    const possibleNumber = text.replace(/[,$£€₹]/g, '').replace(/\s+/g, '');
+    if (/^[-+]?\d+(?:\.\d+)?$/.test(possibleNumber)) {
+      return `number:${Number(possibleNumber)}`;
+    }
+  }
+  return `text:${canonical(text)}`;
+}
+
+function collapseEquivalentDuplicateMappings(
+  mappings: BulkColumnMapping[],
+  dataRows: BulkCellValue[][],
+): BulkColumnMapping[] {
+  const repeatable = new Set<BulkImportField>(['categoryPath', 'imageUrls']);
+  const byField = new Map<BulkImportField, BulkColumnMapping[]>();
+  for (const mapping of mappings) {
+    if (mapping.field === 'ignore' || repeatable.has(mapping.field)) continue;
+    const matches = byField.get(mapping.field) ?? [];
+    matches.push(mapping);
+    byField.set(mapping.field, matches);
+  }
+
+  const redundantIndexes = new Set<number>();
+  for (const duplicates of byField.values()) {
+    if (duplicates.length < 2) continue;
+    const ranked = [...duplicates].sort((left, right) => {
+      const sourceStrength = (mapping: BulkColumnMapping) =>
+        mapping.source === 'override'
+          ? 3
+          : mapping.source === 'alias'
+            ? 2
+            : mapping.source === 'inferred-option'
+              ? 1
+              : 0;
+      return (
+        right.confidence - left.confidence ||
+        sourceStrength(right) - sourceStrength(left) ||
+        right.index - left.index
+      );
+    });
+    const winner = ranked[0];
+    const equivalent = dataRows.every((row) => {
+      const winnerValue = comparableDuplicateCell(
+        row[winner.index],
+        winner.field as BulkImportField,
+      );
+      const nonEmpty = duplicates
+        .map((mapping) =>
+          comparableDuplicateCell(
+            row[mapping.index],
+            mapping.field as BulkImportField,
+          ),
+        )
+        .filter(Boolean);
+      return (
+        nonEmpty.length === 0 ||
+        (Boolean(winnerValue) &&
+          nonEmpty.every((value) => value === winnerValue))
+      );
+    });
+    if (!equivalent) continue;
+    for (const mapping of duplicates) {
+      if (mapping.index !== winner.index) redundantIndexes.add(mapping.index);
+    }
+  }
+
+  return mappings.map((mapping) =>
+    redundantIndexes.has(mapping.index)
+      ? {
+          ...mapping,
+          field: 'ignore',
+          confidence: 0,
+          source: 'unmapped',
+          optionName: undefined,
+        }
+      : mapping,
+  );
+}
+
 function headerDiagnostics(
   headers: string[],
   mappings: BulkColumnMapping[],
@@ -913,7 +1025,10 @@ export function detectBulkImportHeader(
   const headers = rows[rowIndex].map(
     (value, index) => cellText(value) || `Column ${index + 1}`,
   );
-  const mappings = mappingsForHeaders(headers);
+  const mappings = collapseEquivalentDuplicateMappings(
+    mappingsForHeaders(headers),
+    rows.slice(rowIndex + 1),
+  );
   const { confidence, issues } = headerDiagnostics(
     headers,
     mappings,
@@ -1129,10 +1244,13 @@ export function inferBulkImportCategory(
       (best.score / (best.score + 18)) * 0.48 +
       Math.min(0.09, margin / 100),
   );
+  const complianceNote =
+    best.template.complianceNote &&
+    (confidence >= confidenceThreshold || (best.score >= 15 && margin >= 3))
+      ? best.template.complianceNote
+      : undefined;
   const requiresReview =
-    confidence < confidenceThreshold ||
-    margin < 3 ||
-    Boolean(best.template.complianceNote);
+    confidence < confidenceThreshold || margin < 3 || Boolean(complianceNote);
   return {
     templateId: best.template.id,
     templateLabel: best.template.label,
@@ -1145,7 +1263,7 @@ export function inferBulkImportCategory(
     evidence: best.evidence,
     runnerUpTemplateId: runnerUp?.template.id,
     requiresReview,
-    complianceNote: best.template.complianceNote,
+    complianceNote,
   };
 }
 
@@ -1477,7 +1595,7 @@ function normalizeRow(
     description: valueForField(cells, header.mappings, 'description').trim(),
     brand: valueForField(cells, header.mappings, 'brand').trim(),
     sourceCategoryPath: categoryPath,
-    priceCents: price.value,
+    priceCents: catalogMode && !priceRaw ? 0 : price.value,
     compareAtCents: compareAt.value,
     costCents: cost.value,
     stock: stock.value,
@@ -1517,18 +1635,6 @@ function normalizeRow(
         message:
           'This row needs a product name or must inherit one from its explicit parent group.',
         field: 'name',
-        ...context,
-      }),
-    );
-  }
-  if (catalogMode && !priceRaw) {
-    rowIssues.push(
-      issue({
-        severity: 'warning',
-        code: 'MISSING_PRICE',
-        message:
-          'No price was provided. Existing SKUs keep their current price; a price is required to create a new SKU.',
-        field: 'price',
         ...context,
       }),
     );
@@ -1603,16 +1709,16 @@ function normalizeRow(
     values,
     categoryConfidenceThreshold,
   );
-  if (mode === 'catalog_upsert' && categoryInference.requiresReview) {
+  if (
+    mode === 'catalog_upsert' &&
+    categoryInference.requiresReview &&
+    categoryInference.complianceNote
+  ) {
     rowIssues.push(
       issue({
         severity: 'warning',
-        code: categoryInference.complianceNote
-          ? 'REGULATED_CATEGORY_REVIEW'
-          : 'CATEGORY_REVIEW_REQUIRED',
-        message:
-          categoryInference.complianceNote ??
-          `Review the suggested ${categoryInference.templateLabel} category.`,
+        code: 'REGULATED_CATEGORY_REVIEW',
+        message: categoryInference.complianceNote,
         field: 'categoryPath',
         ...context,
       }),
@@ -1766,16 +1872,15 @@ function inheritProductFamilyRows(
         row.values,
         categoryConfidenceThreshold,
       );
-      if (row.categoryInference.requiresReview) {
+      if (
+        row.categoryInference.requiresReview &&
+        row.categoryInference.complianceNote
+      ) {
         row.issues.push(
           issue({
             severity: 'warning',
-            code: row.categoryInference.complianceNote
-              ? 'REGULATED_CATEGORY_REVIEW'
-              : 'CATEGORY_REVIEW_REQUIRED',
-            message:
-              row.categoryInference.complianceNote ??
-              `Review the suggested ${row.categoryInference.templateLabel} category.`,
+            code: 'REGULATED_CATEGORY_REVIEW',
+            message: row.categoryInference.complianceNote,
             field: 'categoryPath',
             sheet: row.sheet,
             rowNumber: row.rowNumber,
@@ -1953,6 +2058,9 @@ export function groupBulkImportRows(
       ...groupRows.flatMap((row) => row.issues),
       ...groupIssues,
     ];
+    const requiresCategoryReview =
+      mode === 'catalog_upsert' &&
+      groupRows.some((row) => row.categoryInference.requiresReview);
     return {
       key,
       parentSku,
@@ -1963,7 +2071,8 @@ export function groupBulkImportRows(
       categoryInference,
       status: allIssues.some((candidate) => candidate.severity === 'error')
         ? 'error'
-        : allIssues.some((candidate) => candidate.severity === 'warning')
+        : requiresCategoryReview ||
+            allIssues.some((candidate) => candidate.severity === 'warning')
           ? 'review'
           : 'ready',
       issues: groupIssues,
@@ -1975,9 +2084,10 @@ function applyMappingOverrides(
   header: BulkImportHeader,
   overrides: Record<string, BulkImportField | 'ignore'> | undefined,
   sheet: string,
+  rows: BulkCellValue[][],
 ): BulkImportHeader {
   if (!overrides) return header;
-  const mappings = header.mappings.map((mapping) => {
+  const overriddenMappings = header.mappings.map((mapping) => {
     const override =
       overrides[String(mapping.index)] ??
       overrides[mapping.header] ??
@@ -1995,6 +2105,10 @@ function applyMappingOverrides(
         }
       : mapping;
   });
+  const mappings = collapseEquivalentDuplicateMappings(
+    overriddenMappings,
+    rows.slice(header.rowNumber),
+  );
   if (header.issues.some((candidate) => candidate.code === 'EMPTY_SHEET')) {
     return { ...header, mappings };
   }
@@ -2232,6 +2346,221 @@ async function matricesForInput(
   ];
 }
 
+function skuCollisionIdentitySignature(row: BulkImportRow): string {
+  const values = row.values;
+  return JSON.stringify({
+    parentSku: canonical(values.parentSku),
+    barcode: canonical(values.barcode),
+    name: canonical(values.name),
+    brand: canonical(values.brand),
+    sourceCategoryPath: values.sourceCategoryPath.map(canonical),
+    options: values.options.map((option) => ({
+      name: canonical(option.name),
+      value: canonical(option.value),
+    })),
+  });
+}
+
+function stableSkuNamespaceToken(value: string): string {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(6, '0').slice(-6);
+}
+
+function sanitizedSheetSkuPrefix(sheet: string): string {
+  const prefix = canonical(sheet)
+    .toUpperCase()
+    .replace(/\s+/g, '-')
+    .replace(/^[^A-Z0-9]+|[-_.]+$/g, '')
+    .slice(0, 24)
+    .replace(/[-_.]+$/g, '');
+  return prefix || `SHEET-${stableSkuNamespaceToken(sheet)}`;
+}
+
+function compareSkuNamespaceText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function generatedSheetSkuPrefixes(
+  sheets: Iterable<string>,
+): Map<string, string> {
+  const uniqueSheets = [...new Set(sheets)].sort(compareSkuNamespaceText);
+  const byBase = new Map<string, string[]>();
+  for (const sheet of uniqueSheets) {
+    const base = sanitizedSheetSkuPrefix(sheet);
+    const matches = byBase.get(base) ?? [];
+    matches.push(sheet);
+    byBase.set(base, matches);
+  }
+  const prefixes = new Map<string, string>();
+  for (const [base, matches] of byBase) {
+    for (const sheet of matches) {
+      prefixes.set(
+        sheet,
+        matches.length === 1
+          ? base
+          : `${base.slice(0, 17).replace(/[-_.]+$/g, '')}-${stableSkuNamespaceToken(sheet)}`,
+      );
+    }
+  }
+  return prefixes;
+}
+
+function fittedSkuNamespace(
+  sku: string,
+  prefix: string,
+  salt: string,
+  reserved: Set<string>,
+): string | null {
+  const maximumPrefixLength = 63 - sku.length;
+  if (maximumPrefixLength < 1) return null;
+  const fit = (value: string) =>
+    value.slice(0, maximumPrefixLength).replace(/[-_.]+$/g, '');
+  const candidatePrefix = fit(prefix);
+  if (!candidatePrefix) return null;
+  const candidate = `${candidatePrefix}-${sku}`;
+  if (!reserved.has(candidate)) return candidate;
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const suffix = stableSkuNamespaceToken(`${salt}:${attempt}`).slice(
+      0,
+      Math.min(6, maximumPrefixLength),
+    );
+    const baseLength = maximumPrefixLength - suffix.length - 1;
+    const disambiguatedPrefix =
+      baseLength > 0
+        ? `${prefix.slice(0, baseLength).replace(/[-_.]+$/g, '')}-${suffix}`
+        : suffix;
+    if (!disambiguatedPrefix) continue;
+    const disambiguated = `${disambiguatedPrefix}-${sku}`;
+    if (!reserved.has(disambiguated)) return disambiguated;
+  }
+  return null;
+}
+
+function autoResolveCrossSheetSkuCollisions(
+  rows: BulkImportRow[],
+  explicitlyPrefixedSheets: ReadonlySet<string>,
+): void {
+  const bySku = new Map<string, BulkImportRow[]>();
+  for (const row of rows) {
+    if (row.kind !== 'data' || !row.values.sku) continue;
+    const matches = bySku.get(row.values.sku) ?? [];
+    matches.push(row);
+    bySku.set(row.values.sku, matches);
+  }
+
+  const renameGroups = new Map<
+    string,
+    { sourceSku: string; sheet: string; rows: BulkImportRow[] }
+  >();
+  for (const [sourceSku, matches] of bySku) {
+    if (new Set(matches.map((row) => row.sheet)).size < 2) continue;
+
+    const bySignature = new Map<string, BulkImportRow[]>();
+    for (const row of matches) {
+      const signature = skuCollisionIdentitySignature(row);
+      const identical = bySignature.get(signature) ?? [];
+      identical.push(row);
+      bySignature.set(signature, identical);
+    }
+    const exactDuplicateRows = new Set(
+      [...bySignature.values()]
+        .filter(
+          (identical) => new Set(identical.map((row) => row.sheet)).size > 1,
+        )
+        .flatMap((identical) => identical),
+    );
+
+    for (const row of matches) {
+      // A child with an explicit parent can only be renamed safely by
+      // namespacing its entire family. Leave that collision visible instead of
+      // splitting the family across parent keys.
+      if (
+        exactDuplicateRows.has(row) ||
+        explicitlyPrefixedSheets.has(row.sheet) ||
+        row.values.parentSku
+      ) {
+        continue;
+      }
+      const key = `${sourceSku}\u0000${row.sheet}`;
+      const group = renameGroups.get(key) ?? {
+        sourceSku,
+        sheet: row.sheet,
+        rows: [],
+      };
+      group.rows.push(row);
+      renameGroups.set(key, group);
+    }
+  }
+
+  const rowsToRename = new Set(
+    [...renameGroups.values()].flatMap((group) => group.rows),
+  );
+  const reservedSkus = new Set(
+    rows
+      .filter(
+        (row) =>
+          row.kind === 'data' && row.values.sku && !rowsToRename.has(row),
+      )
+      .map((row) => row.values.sku),
+  );
+  const prefixes = generatedSheetSkuPrefixes(
+    [...renameGroups.values()].map((group) => group.sheet),
+  );
+  const orderedGroups = [...renameGroups.values()].sort(
+    (left, right) =>
+      compareSkuNamespaceText(left.sourceSku, right.sourceSku) ||
+      compareSkuNamespaceText(left.sheet, right.sheet),
+  );
+
+  for (const group of orderedGroups) {
+    const prefix = prefixes.get(group.sheet);
+    if (!prefix) continue;
+    const namespaced = fittedSkuNamespace(
+      group.sourceSku,
+      prefix,
+      `${group.sheet}:${group.sourceSku}`,
+      reservedSkus,
+    );
+    if (!namespaced) {
+      for (const row of group.rows) {
+        row.issues.push(
+          issue({
+            severity: 'error',
+            code: 'SKU_NAMESPACE_TOO_LONG',
+            message: `SKU ${group.sourceSku} is too long to add the ${prefix} sheet namespace safely.`,
+            field: 'sku',
+            sheet: row.sheet,
+            rowNumber: row.rowNumber,
+          }),
+        );
+      }
+      continue;
+    }
+    reservedSkus.add(namespaced);
+    for (const row of group.rows) {
+      row.values.sku = namespaced;
+      row.parentKey = row.values.parentSku
+        ? `parent:${canonical(row.values.parentSku)}`
+        : `sku:${canonical(row.values.sku)}`;
+      row.issues.push(
+        issue({
+          severity: 'warning',
+          code: 'SKU_NAMESPACED_BY_SHEET',
+          message: `SKU ${group.sourceSku} was changed to ${namespaced} because another sheet uses the same ID for a different product. Use an explicit sheet prefix if this file must match an existing plain SKU.`,
+          field: 'sku',
+          sheet: row.sheet,
+          rowNumber: row.rowNumber,
+        }),
+      );
+    }
+  }
+}
+
 function duplicateSkuIssues(rows: BulkImportRow[]): void {
   const bySku = new Map<string, BulkImportRow[]>();
   for (const row of rows) {
@@ -2329,6 +2658,7 @@ export async function parseBulkImport(
 
   const previewSheets: BulkImportSheet[] = [];
   const normalizedRows: BulkImportRow[] = [];
+  const explicitlyPrefixedSheets = new Set<string>();
   const threshold = Math.max(
     0,
     Math.min(1, options.categoryConfidenceThreshold ?? 0.72),
@@ -2344,11 +2674,13 @@ export async function parseBulkImport(
       header,
       options.columnMappingsBySheet?.[matrix.name],
       matrix.name,
+      matrix.rows,
     );
     const skuPrefix = normalizedSkuPrefix(
       options.skuPrefixBySheet?.[matrix.name],
       matrix.name,
     );
+    if (skuPrefix) explicitlyPrefixedSheets.add(matrix.name);
     const sourceRows: BulkImportSourceRow[] = matrix.rows.map(
       (cells, index) => {
         const rowNumber = index + 1;
@@ -2390,6 +2722,12 @@ export async function parseBulkImport(
     });
   }
 
+  if (options.autoResolveCrossSheetSkuCollisions) {
+    autoResolveCrossSheetSkuCollisions(
+      normalizedRows,
+      explicitlyPrefixedSheets,
+    );
+  }
   if (mode === 'catalog_upsert') {
     inheritProductFamilyRows(normalizedRows, threshold);
   }

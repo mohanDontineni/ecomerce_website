@@ -152,3 +152,7 @@ export function money(cents: number, currency = 'USD'): string {
     maximumFractionDigits: 2,
   }).format(cents / 100);
 }
+
+export function catalogPrice(cents: number, currency = 'USD'): string {
+  return cents === 0 ? 'Free' : money(cents, currency);
+}

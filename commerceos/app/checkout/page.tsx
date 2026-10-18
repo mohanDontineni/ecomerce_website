@@ -16,7 +16,7 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select';
-import { money } from '@/lib/domain';
+import { catalogPrice, money } from '@/lib/domain';
 import { useCart } from '@/components/storefront/cart-context';
 import { useStorePresentation } from '@/hooks/use-store-presentation';
 import type { PaymentSession } from '@/lib/payments/provider';
@@ -134,7 +134,7 @@ export default function CheckoutPage() {
         </h1>
         <p>
           Order <strong>{confirmation.orderNumber}</strong> was created for{' '}
-          {money(confirmation.totalCents, confirmation.currency)}.
+          {catalogPrice(confirmation.totalCents, confirmation.currency)}.
         </p>
         <div className="confirmation-note">
           <Sparkles />
@@ -291,7 +291,9 @@ export default function CheckoutPage() {
           >
             {loading
               ? 'Placing order…'
-              : `Place order · ${money(cart.subtotalCents, storeCurrency)}`}
+              : cart.subtotalCents === 0
+                ? 'Place free order'
+                : `Place order · ${money(cart.subtotalCents, storeCurrency)}`}
           </Button>
           <p className="checkout-legal">
             By placing this order you agree to the store&apos;s checkout and
@@ -313,7 +315,7 @@ export default function CheckoutPage() {
                   <span>{line.optionSummary || line.sku}</span>
                 </p>
                 <strong>
-                  {money(line.priceCents * line.quantity, storeCurrency)}
+                  {catalogPrice(line.priceCents * line.quantity, storeCurrency)}
                 </strong>
               </article>
             ))}

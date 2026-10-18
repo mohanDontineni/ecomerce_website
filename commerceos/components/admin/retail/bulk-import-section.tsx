@@ -43,6 +43,7 @@ import {
 import {
   parseBulkImport,
   type BulkImportField,
+  type BulkImportIssue,
   type BulkImportMode,
   type BulkImportPreview,
   type BulkImportRow,
@@ -95,6 +96,36 @@ const mappingFields: Array<{
   { value: 'option3Value', label: 'Option 3 value' },
 ];
 
+type GroupedImportIssue = {
+  severity: BulkImportIssue['severity'];
+  code: string;
+  count: number;
+  representative: BulkImportIssue;
+};
+
+function groupImportIssues(issues: BulkImportIssue[]): GroupedImportIssue[] {
+  const groups = new Map<string, GroupedImportIssue>();
+  for (const issue of issues) {
+    const key = `${issue.severity}:${issue.code}`;
+    const existing = groups.get(key);
+    if (existing) existing.count += 1;
+    else {
+      groups.set(key, {
+        severity: issue.severity,
+        code: issue.code,
+        count: 1,
+        representative: issue,
+      });
+    }
+  }
+  return [...groups.values()].sort(
+    (left, right) =>
+      Number(right.severity === 'error') - Number(left.severity === 'error') ||
+      right.count - left.count ||
+      left.code.localeCompare(right.code),
+  );
+}
+
 export function BulkImportSection({
   data,
   importsBase,
@@ -137,10 +168,20 @@ export function BulkImportSection({
     ) ?? [];
   const selectedHasErrors =
     selectedErrorRows.length > 0 || selectedErrorGroups.length > 0;
-  const duplicateSkuIssues =
-    preview?.issues.filter((issue) =>
-      ['DUPLICATE_FILE_SKU', 'DUPLICATE_VARIANT_SKU'].includes(issue.code),
+  const blockingIssues =
+    preview?.issues.filter((issue) => issue.severity === 'error') ?? [];
+  const advisoryIssues =
+    preview?.issues.filter((issue) => issue.severity === 'warning') ?? [];
+  const namespaceIssues =
+    preview?.issues.filter(
+      (issue) => issue.code === 'SKU_NAMESPACED_BY_SHEET',
     ) ?? [];
+  const groupedIssues = groupImportIssues(preview?.issues ?? []);
+  const groupStatusByRowId = new Map(
+    preview?.groups.flatMap((group) =>
+      group.rows.map((row) => [row.id, group.status] as const),
+    ) ?? [],
+  );
   const progress = job
     ? job.totalRows > 0
       ? Math.round((job.appliedRows / job.totalRows) * 100)
@@ -177,6 +218,7 @@ export function BulkImportSection({
         columnMappingsBySheet: nextMappings,
         headerRowBySheet: nextHeaderRows,
         skuPrefixBySheet: nextSkuPrefixes,
+        autoResolveCrossSheetSkuCollisions: true,
       });
       setPreview(result);
       notify(
@@ -589,36 +631,35 @@ export function BulkImportSection({
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <SummaryCard
-              label="Ready rows"
+              label="Importable rows"
               value={preview.summary.validRows}
               tone="success"
             />
             <SummaryCard
-              label="Warnings"
+              label="Blocking error rows"
+              value={preview.summary.errorRows}
+              tone={preview.summary.errorRows ? 'error' : 'neutral'}
+            />
+            <SummaryCard
+              label="Rows needing review"
               value={preview.summary.warningRows}
               tone="warning"
             />
             <SummaryCard
-              label="Errors"
-              value={preview.summary.errorRows}
-              tone="error"
-            />
-            <SummaryCard
-              label="Needs group review"
+              label="Product groups to review"
               value={preview.summary.reviewRequiredGroups}
               tone="warning"
             />
           </div>
 
-          {duplicateSkuIssues.length ? (
-            <Alert variant="destructive">
-              <AlertTriangle />
-              <AlertTitle>Duplicate SKU identifiers need attention</AlertTitle>
+          {preview.sheets.length > 1 ? (
+            <Alert>
+              <Layers3 />
+              <AlertTitle>Cross-sheet SKU safety</AlertTitle>
               <AlertDescription>
-                If separate sheets reuse the same SKU values, add a stable SKU
-                prefix to one affected sheet below and re-analyze. Duplicates
-                within one sheet still need a corrected SKU mapping or source
-                value.
+                {namespaceIssues.length
+                  ? `${namespaceIssues.length} reused IDs were namespaced by sheet. Review the final SKUs below or set an explicit sheet prefix to preserve an existing identifier.`
+                  : 'If different products reuse an ID across sheets, MDCart automatically namespaces that ID by sheet. The final SKU remains visible in the item preview before staging.'}
               </AlertDescription>
             </Alert>
           ) : null}
@@ -820,7 +861,7 @@ export function BulkImportSection({
               </div>
               {preview.issues.length ? (
                 <Button size="sm" variant="outline" onClick={downloadIssues}>
-                  <Download /> Download issues
+                  <Download /> Download full issue CSV
                 </Button>
               ) : null}
             </header>
@@ -839,9 +880,12 @@ export function BulkImportSection({
               </TableHeader>
               <TableBody>
                 {dataRows.slice(0, 100).map((row) => {
-                  const hasError = row.issues.some(
-                    (issue) => issue.severity === 'error',
-                  );
+                  const groupStatus = groupStatusByRowId.get(row.id);
+                  const hasError =
+                    groupStatus === 'error' ||
+                    row.issues.some((issue) => issue.severity === 'error');
+                  const needsReview =
+                    groupStatus === 'review' || row.issues.length > 0;
                   const checked = !excludedRows.has(row.id);
                   return (
                     <TableRow
@@ -899,7 +943,7 @@ export function BulkImportSection({
                       <TableCell>
                         {hasError ? (
                           <Badge variant="destructive">Error</Badge>
-                        ) : row.issues.length ? (
+                        ) : needsReview ? (
                           <Badge variant="outline">Review</Badge>
                         ) : (
                           <Badge variant="secondary">Ready</Badge>
@@ -919,28 +963,65 @@ export function BulkImportSection({
           </section>
 
           {preview.issues.length ? (
-            <Alert
-              variant={preview.summary.errorRows ? 'destructive' : 'default'}
-            >
+            <Alert variant={blockingIssues.length ? 'destructive' : 'default'}>
               <AlertTriangle />
-              <AlertTitle>{preview.issues.length} detected issues</AlertTitle>
+              <AlertTitle>Import review</AlertTitle>
               <AlertDescription>
-                <ul className="mt-2 list-disc space-y-1 pl-5">
-                  {preview.issues.slice(0, 8).map((issue, index) => (
-                    <li key={issue.code + '-' + index}>
-                      {issue.sheet
-                        ? issue.sheet +
-                          (issue.rowNumber
-                            ? ' row ' + issue.rowNumber + ': '
-                            : ': ')
-                        : ''}
-                      {issue.message}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Badge
+                    variant={blockingIssues.length ? 'destructive' : 'outline'}
+                  >
+                    {blockingIssues.length} blocking{' '}
+                    {blockingIssues.length === 1 ? 'error' : 'errors'}
+                  </Badge>
+                  <Badge variant="outline">
+                    {advisoryIssues.length} advisory{' '}
+                    {advisoryIssues.length === 1 ? 'warning' : 'warnings'}
+                  </Badge>
+                </div>
+                <ul className="mt-3 space-y-2">
+                  {groupedIssues.slice(0, 8).map((group) => (
+                    <li
+                      key={`${group.severity}:${group.code}`}
+                      className="rounded-lg border border-current/10 bg-background/45 p-2.5"
+                    >
+                      <span className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant={
+                            group.severity === 'error'
+                              ? 'destructive'
+                              : 'outline'
+                          }
+                        >
+                          {group.severity === 'error'
+                            ? 'Blocking error'
+                            : 'Advisory warning'}
+                        </Badge>
+                        <strong>
+                          {group.count}{' '}
+                          {group.count === 1 ? 'occurrence' : 'occurrences'}
+                        </strong>
+                        <span className="text-xs uppercase tracking-wide opacity-70">
+                          {group.code.replaceAll('_', ' ')}
+                        </span>
+                      </span>
+                      <span className="mt-1.5 block">
+                        {group.representative.message}
+                      </span>
+                      {group.representative.sheet ? (
+                        <small className="mt-1 block opacity-75">
+                          Example: {group.representative.sheet}
+                          {group.representative.rowNumber
+                            ? ` row ${group.representative.rowNumber}`
+                            : ''}
+                        </small>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
-                {preview.issues.length > 8 ? (
+                {groupedIssues.length > 8 ? (
                   <p className="mt-2">
-                    Download the issue report for the complete list.
+                    Download the issue report for every row-level occurrence.
                   </p>
                 ) : null}
               </AlertDescription>
@@ -1158,7 +1239,7 @@ function SummaryCard({
 }: {
   label: string;
   value: number;
-  tone: 'success' | 'warning' | 'error';
+  tone: 'success' | 'warning' | 'error' | 'neutral';
 }) {
   return (
     <article className="rounded-xl bg-card p-4 ring-1 ring-black/5">
@@ -1171,7 +1252,9 @@ function SummaryCard({
             ? 'mt-1 block text-2xl text-destructive'
             : tone === 'warning'
               ? 'mt-1 block text-2xl text-amber-700'
-              : 'mt-1 block text-2xl text-emerald-700'
+              : tone === 'success'
+                ? 'mt-1 block text-2xl text-emerald-700'
+                : 'mt-1 block text-2xl text-foreground'
         }
       >
         {value}

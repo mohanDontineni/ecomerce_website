@@ -46,7 +46,7 @@ import type {
   ThemeSettings,
 } from '@/lib/domain';
 import { PLATFORM_NAME } from '@/lib/branding';
-import { money } from '@/lib/domain';
+import { catalogPrice, money } from '@/lib/domain';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -1234,8 +1234,8 @@ function ProductsSection({
               </div>
               <strong>
                 {product.minPriceCents === product.maxPriceCents
-                  ? money(product.minPriceCents, data.store.currency)
-                  : `${money(product.minPriceCents, data.store.currency)}+`}
+                  ? catalogPrice(product.minPriceCents, data.store.currency)
+                  : `${catalogPrice(product.minPriceCents, data.store.currency)}+`}
               </strong>
               <div className="row-actions">
                 <Button

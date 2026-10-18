@@ -13,7 +13,7 @@ import {
   Truck,
 } from 'lucide-react';
 import type { StorefrontProduct, StoreSettings, ThemeSettings } from '@/lib/domain';
-import { money } from '@/lib/domain';
+import { catalogPrice, money } from '@/lib/domain';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useCart } from './cart-context';
@@ -150,7 +150,7 @@ export function ProductDetail({
           <div className="detail-price">
             <strong>
               {!selectedVariant && product.minPriceCents !== product.maxPriceCents ? 'From ' : ''}
-              {money(displayPrice, store.currency)}
+              {catalogPrice(displayPrice, store.currency)}
             </strong>
             {displayCompareAt && displayCompareAt > displayPrice && (
               <del>{money(displayCompareAt, store.currency)}</del>
