@@ -14,6 +14,8 @@ export type RetailUser = {
 
 export type RetailNoticeTone = 'success' | 'error' | 'info';
 
+export const ADMIN_SESSION_EXPIRED_EVENT = 'mdcart:admin-session-expired';
+
 export type RetailLocation = {
   id: string;
   code: string;
@@ -251,9 +253,12 @@ export async function retailRequest<T>(
     headers,
   });
   const result = (await response.json().catch(() => null)) as
-    | (T & { error?: string })
+    | (T & { error?: string; code?: string })
     | null;
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
+    }
     throw new Error(
       result?.error || 'The retail operation could not be completed.',
     );

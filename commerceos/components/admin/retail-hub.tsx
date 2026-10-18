@@ -231,7 +231,7 @@ export function RetailHub({
         </RetailFeedback>
       ) : null}
 
-      {visibleTabItems.length === 0 && !loading ? (
+      {visibleTabItems.length === 0 && !loading && !loadError ? (
         <Alert>
           <ReceiptText />
           <AlertTitle>No retail module is assigned</AlertTitle>

@@ -67,6 +67,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ModularProductDialog } from './modular-product-dialog';
 import { RetailHub } from './retail-hub';
+import { ADMIN_SESSION_EXPIRED_EVENT } from './retail/types';
 
 type AdminUser = {
   id: string;
@@ -201,6 +202,7 @@ export function AdminApp() {
   const [view, setView] = useState<View>('overview');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notice, setNotice] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
   const [loadingData, setLoadingData] = useState(false);
 
   const showNotice = useCallback((message: string) => {
@@ -208,12 +210,29 @@ export function AdminApp() {
     window.setTimeout(() => setNotice(''), 3200);
   }, []);
 
+  const expireSession = useCallback(() => {
+    setUser(null);
+    setOverview(null);
+    setAuthMessage('Your session expired. Sign in again to continue.');
+    setAuthState('logged-out');
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener(ADMIN_SESSION_EXPIRED_EVENT, expireSession);
+    return () =>
+      window.removeEventListener(ADMIN_SESSION_EXPIRED_EVENT, expireSession);
+  }, [expireSession]);
+
   const refresh = useCallback(async () => {
     setLoadingData(true);
     try {
       const response = await fetch('/api/admin/overview', {
         cache: 'no-store',
       });
+      if (response.status === 401) {
+        expireSession();
+        return;
+      }
       if (!response.ok) throw new Error('Could not load the control room.');
       setOverview((await response.json()) as OverviewData);
     } catch (error) {
@@ -225,7 +244,7 @@ export function AdminApp() {
     } finally {
       setLoadingData(false);
     }
-  }, [showNotice]);
+  }, [expireSession, showNotice]);
 
   useEffect(() => {
     void (async () => {
@@ -250,6 +269,7 @@ export function AdminApp() {
   }, [refresh]);
 
   async function authenticated(nextUser: AdminUser) {
+    setAuthMessage('');
     setUser(nextUser);
     if (nextUser.mustChangePassword || !nextUser.emailVerified) {
       setAuthState('onboarding');
@@ -261,6 +281,7 @@ export function AdminApp() {
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
+    setAuthMessage('');
     setUser(null);
     setOverview(null);
     setAuthState('logged-out');
@@ -268,7 +289,12 @@ export function AdminApp() {
 
   if (authState === 'loading') return <AdminLoading />;
   if (authState === 'logged-out') {
-    return <AdminLogin onAuthenticated={authenticated} />;
+    return (
+      <AdminLogin
+        message={authMessage}
+        onAuthenticated={authenticated}
+      />
+    );
   }
   if (authState === 'onboarding' && user) {
     return <AdminOnboarding user={user} onAuthenticated={authenticated} />;
@@ -464,8 +490,10 @@ function AdminLoading() {
 }
 
 function AdminLogin({
+  message,
   onAuthenticated,
 }: {
+  message?: string;
   onAuthenticated: (user: AdminUser) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -539,6 +567,9 @@ function AdminLogin({
           <span className="kicker">Store administration</span>
           <h2>Welcome back.</h2>
           <p>Sign in to manage your {PLATFORM_NAME} store.</p>
+          {message ? (
+            <output className="form-error">{message}</output>
+          ) : null}
           <div>
             <Label htmlFor="admin-username">Username</Label>
             <Input
