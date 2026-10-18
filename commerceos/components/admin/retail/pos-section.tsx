@@ -7,7 +7,6 @@ import {
   Barcode,
   Boxes,
   ChevronRight,
-  CreditCard,
   Loader2,
   Minus,
   Package,
@@ -492,7 +491,7 @@ export function PosSection({
       setCart([]);
       setCheckoutOpen(false);
       notify(
-        'Sale completed' +
+        (totalCents === 0 ? 'Free sale completed' : 'Cash sale completed') +
           (result.receiptNumber || result.sale?.receiptNumber
             ? ': ' + (result.receiptNumber || result.sale?.receiptNumber)
             : '.'),
@@ -905,7 +904,7 @@ export function PosSection({
                   disabled={!activeShift || cart.length === 0}
                   onClick={beginCheckout}
                 >
-                  <CreditCard /> Pay
+                  <Banknote /> Cash checkout
                 </Button>
               </div>
             </footer>
@@ -987,14 +986,19 @@ export function PosSection({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={checkoutOpen} onOpenChange={setCheckoutOpen}>
+      <Dialog
+        open={checkoutOpen}
+        onOpenChange={(open) => !busy && setCheckoutOpen(open)}
+      >
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Complete sale</DialogTitle>
+            <DialogTitle>
+              {totalCents === 0 ? 'Complete free sale' : 'Complete cash sale'}
+            </DialogTitle>
             <DialogDescription>
-              MDCart records cash immediately. Card, gift-card, and store-credit
-              tenders remain disabled until a trusted server-side payment
-              adapter verifies them.
+              {totalCents === 0
+                ? 'No payment is required. Completing the sale records the receipt and deducts inventory.'
+                : 'No payment gateway is required. Clicking Paid in cash records the receipt, deducts inventory, and updates the expected cash drawer balance.'}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -1026,42 +1030,56 @@ export function PosSection({
             <section className="space-y-3 rounded-xl border p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <strong className="block text-sm">Cash payment</strong>
+                  <strong className="block text-sm">
+                    {totalCents === 0 ? 'No payment due' : 'Cash payment'}
+                  </strong>
                   <span className="text-xs text-muted-foreground">
-                    Enter the amount received; any excess is calculated as
-                    change.
+                    {totalCents === 0
+                      ? `This order total is ${money(totalCents, currency)} and can be completed as a free sale.`
+                      : 'Enter the amount received; any excess is calculated as change.'}
                   </span>
                 </div>
-                <Badge variant="secondary">Cash-only safe mode</Badge>
+                <Badge variant="secondary">
+                  {totalCents === 0
+                    ? 'No payment required'
+                    : 'No gateway required'}
+                </Badge>
               </div>
-              {tenders.map((tender, index) => (
-                <div
-                  key={tender.key}
-                  className="grid items-center gap-2 sm:grid-cols-[1fr_180px]"
-                >
-                  <span className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm font-semibold">
-                    <Banknote className="size-4 text-emerald-700" /> Cash
-                  </span>
-                  <Input
-                    aria-label={'Tender ' + (index + 1) + ' amount'}
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    inputMode="decimal"
-                    value={tender.amount}
-                    onChange={(event) =>
-                      setTenders((items) =>
-                        items.map((item) =>
-                          item.key === tender.key
-                            ? { ...item, amount: event.target.value }
-                            : item,
-                        ),
-                      )
-                    }
-                    required
-                  />
+              {totalCents === 0 ? (
+                <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm font-semibold">
+                  <Banknote className="size-4 text-emerald-700" /> Free sale ·{' '}
+                  {money(0, currency)} due
                 </div>
-              ))}
+              ) : (
+                tenders.map((tender, index) => (
+                  <div
+                    key={tender.key}
+                    className="grid items-center gap-2 sm:grid-cols-[1fr_180px]"
+                  >
+                    <span className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm font-semibold">
+                      <Banknote className="size-4 text-emerald-700" /> Cash
+                    </span>
+                    <Input
+                      aria-label={'Tender ' + (index + 1) + ' amount'}
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={tender.amount}
+                      onChange={(event) =>
+                        setTenders((items) =>
+                          items.map((item) =>
+                            item.key === tender.key
+                              ? { ...item, amount: event.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                      required
+                    />
+                  </div>
+                ))
+              )}
             </section>
             <div className="grid gap-3 rounded-xl bg-muted p-4 sm:grid-cols-3">
               <span>
@@ -1095,14 +1113,17 @@ export function PosSection({
                 type="button"
                 variant="outline"
                 onClick={() => setCheckoutOpen(false)}
+                disabled={busy}
               >
                 Back to cart
               </Button>
               <Button type="submit" disabled={busy || remainingCents > 0}>
-                {busy ? <Loader2 className="animate-spin" /> : <CreditCard />}
+                {busy ? <Loader2 className="animate-spin" /> : <Banknote />}
                 {busy
-                  ? 'Processing…'
-                  : 'Complete ' + money(totalCents, currency)}
+                  ? 'Completing sale…'
+                  : totalCents === 0
+                    ? 'Complete free sale'
+                    : 'Paid in cash — complete sale'}
               </Button>
             </DialogFooter>
           </form>
