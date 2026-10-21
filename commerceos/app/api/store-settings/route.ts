@@ -26,7 +26,10 @@ export async function PATCH(request: Request) {
       if (field === 'published') {
         if (typeof value !== 'boolean') {
           return Response.json(
-            { error: 'Published must be true or false.', code: 'INVALID_INPUT' },
+            {
+              error: 'Published must be true or false.',
+              code: 'INVALID_INPUT',
+            },
             { status: 400 },
           );
         }
@@ -52,7 +55,10 @@ export async function PATCH(request: Request) {
       }
       if (field === 'currency' && !/^[A-Z]{3}$/.test(String(value))) {
         return Response.json(
-          { error: 'Currency must be a three-letter ISO code.', code: 'INVALID_INPUT' },
+          {
+            error: 'Currency must be a three-letter ISO code.',
+            code: 'INVALID_INPUT',
+          },
           { status: 400 },
         );
       }
@@ -67,16 +73,36 @@ export async function PATCH(request: Request) {
     }
     if (!assignments.length) {
       return Response.json(
-        { error: 'No supported settings were supplied.', code: 'INVALID_INPUT' },
+        {
+          error: 'No supported settings were supplied.',
+          code: 'INVALID_INPUT',
+        },
         { status: 400 },
       );
     }
+    const db = database();
+    const currencyGuarded = typeof body.currency === 'string';
     assignments.push('updated_at = ?');
     values.push(isoNow());
-    await database()
-      .prepare(`UPDATE store_settings SET ${assignments.join(', ')} WHERE id = 'main'`)
+    if (currencyGuarded) values.push(body.currency);
+    const updated = await db
+      .prepare(
+        `UPDATE store_settings SET ${assignments.join(', ')}
+         WHERE id = 'main'
+           ${currencyGuarded ? "AND (currency = ? OR NOT EXISTS (SELECT 1 FROM register_shifts WHERE status = 'open'))" : ''}`,
+      )
       .bind(...values)
       .run();
+    if (currencyGuarded && updated.meta.changes === 0) {
+      return Response.json(
+        {
+          error:
+            'Close every open register shift before changing store currency.',
+          code: 'OPEN_SHIFT_CURRENCY_LOCK',
+        },
+        { status: 409 },
+      );
+    }
     await audit(user.id, 'store.settings_updated', 'store', 'main', {
       fields: Object.keys(body),
     });

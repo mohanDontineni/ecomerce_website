@@ -47,6 +47,7 @@ import { PLATFORM_NAME } from '@/lib/branding';
 import { catalogPrice, money } from '@/lib/domain';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -426,6 +427,9 @@ export function AdminApp() {
                   data={overview}
                   refresh={refresh}
                   showNotice={showNotice}
+                  canManageCatalog={['owner', 'admin', 'catalog'].includes(
+                    user.role,
+                  )}
                 />
               )}
               {view === 'inventory' && (
@@ -1080,35 +1084,138 @@ function ProductsSection({
   data,
   refresh,
   showNotice,
+  canManageCatalog,
 }: {
   data: OverviewData;
   refresh: () => Promise<void>;
   showNotice: (message: string) => void;
+  canManageCatalog: boolean;
 }) {
   const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | Product['status']>(
+    'all',
+  );
+  const [selectedDraftIds, setSelectedDraftIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [activationTarget, setActivationTarget] = useState<
+    'selected' | 'all_drafts' | null
+  >(null);
+  const [activationBusy, setActivationBusy] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const draftProducts = data.products.filter(
+    (product) => product.status === 'draft',
+  );
   const products = data.products.filter((product) => {
     const value = query.toLowerCase();
     return (
-      !value ||
-      product.name.toLowerCase().includes(value) ||
-      product.sku.toLowerCase().includes(value) ||
-      product.categoryPath.some((item) =>
-        item.name.toLowerCase().includes(value),
-      ) ||
-      product.attributes.some(
-        (attribute) =>
-          attribute.name.toLowerCase().includes(value) ||
-          attribute.value.toLowerCase().includes(value),
-      ) ||
-      product.variants.some((variant) =>
-        variant.sku.toLowerCase().includes(value),
-      )
+      (statusFilter === 'all' || product.status === statusFilter) &&
+      (!value ||
+        product.name.toLowerCase().includes(value) ||
+        product.sku.toLowerCase().includes(value) ||
+        product.categoryPath.some((item) =>
+          item.name.toLowerCase().includes(value),
+        ) ||
+        product.attributes.some(
+          (attribute) =>
+            attribute.name.toLowerCase().includes(value) ||
+            attribute.value.toLowerCase().includes(value),
+        ) ||
+        product.variants.some((variant) =>
+          variant.sku.toLowerCase().includes(value),
+        ))
     );
   });
+  const visibleDrafts = products.filter(
+    (product) => product.status === 'draft',
+  );
+  const visibleSelectedCount = visibleDrafts.filter((product) =>
+    selectedDraftIds.has(product.id),
+  ).length;
+  const allVisibleDraftsSelected =
+    visibleDrafts.length > 0 && visibleSelectedCount === visibleDrafts.length;
+  const activationCount =
+    activationTarget === 'all_drafts'
+      ? draftProducts.length
+      : activationTarget === 'selected'
+        ? selectedDraftIds.size
+        : 0;
+
+  useEffect(() => {
+    const validDraftIds = new Set(
+      data.products
+        .filter((product) => product.status === 'draft')
+        .map((product) => product.id),
+    );
+    setSelectedDraftIds((current) => {
+      const next = new Set(
+        [...current].filter((productId) => validDraftIds.has(productId)),
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [data.products]);
+
+  function toggleVisibleDrafts(checked: boolean) {
+    setSelectedDraftIds((current) => {
+      const next = new Set(current);
+      for (const product of visibleDrafts) {
+        if (checked) next.add(product.id);
+        else next.delete(product.id);
+      }
+      return next;
+    });
+  }
+
+  function toggleDraft(productId: string, checked: boolean) {
+    setSelectedDraftIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(productId);
+      else next.delete(productId);
+      return next;
+    });
+  }
+
+  async function activateDrafts() {
+    if (!activationTarget || activationBusy) return;
+    const productIds = [...selectedDraftIds];
+    if (activationTarget === 'selected' && productIds.length === 0) return;
+    setActivationBusy(true);
+    try {
+      const response = await fetch('/api/products/bulk-status', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          activationTarget === 'all_drafts'
+            ? { status: 'active', scope: 'all_drafts' }
+            : { status: 'active', productIds },
+        ),
+      });
+      const result = (await response.json().catch(() => null)) as {
+        error?: string;
+        updated?: number;
+      } | null;
+      if (!response.ok) {
+        showNotice(result?.error ?? 'Could not activate those products.');
+        return;
+      }
+      const updated = result?.updated ?? 0;
+      setActivationTarget(null);
+      setSelectedDraftIds(new Set());
+      showNotice(
+        updated > 0
+          ? `${updated} draft ${updated === 1 ? 'product is' : 'products are'} now active.`
+          : 'The selected products were already active.',
+      );
+      await refresh();
+    } catch {
+      showNotice('Could not reach the server to activate those products.');
+    } finally {
+      setActivationBusy(false);
+    }
+  }
 
   async function archive(product: Product) {
     if (
@@ -1167,14 +1274,24 @@ function ProductsSection({
         title="Products"
         description="Create, publish, photograph, and organize everything your store sells."
         actions={
-          <Button
-            onClick={() => {
-              setEditing(null);
-              setDialogOpen(true);
-            }}
-          >
-            <Plus /> Add product
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {canManageCatalog && draftProducts.length > 0 ? (
+              <Button
+                variant="outline"
+                onClick={() => setActivationTarget('all_drafts')}
+              >
+                <CheckCircle2 /> Activate all {draftProducts.length} drafts
+              </Button>
+            ) : null}
+            <Button
+              onClick={() => {
+                setEditing(null);
+                setDialogOpen(true);
+              }}
+            >
+              <Plus /> Add product
+            </Button>
+          </div>
         }
       />
       <div className="admin-toolbar">
@@ -1187,11 +1304,75 @@ function ProductsSection({
             aria-label="Search products"
           />
         </label>
-        <span>{products.length} catalog items</span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Label className="sr-only" htmlFor="product-status-filter">
+            Filter products by status
+          </Label>
+          <NativeSelect
+            id="product-status-filter"
+            value={statusFilter}
+            onChange={(event) =>
+              setStatusFilter(event.target.value as 'all' | Product['status'])
+            }
+            className="w-36"
+          >
+            <NativeSelectOption value="all">All statuses</NativeSelectOption>
+            <NativeSelectOption value="draft">Draft</NativeSelectOption>
+            <NativeSelectOption value="active">Active</NativeSelectOption>
+            <NativeSelectOption value="archived">Archived</NativeSelectOption>
+          </NativeSelect>
+          <span className="text-xs text-muted-foreground">
+            {products.length} of {data.products.length} catalog items
+          </span>
+        </div>
       </div>
+      {selectedDraftIds.size > 0 ? (
+        <div
+          className="mb-4 flex flex-col gap-3 rounded-2xl border border-primary/20 bg-primary/5 p-3 sm:flex-row sm:items-center sm:justify-between"
+          aria-label="Bulk product actions"
+        >
+          <div>
+            <strong className="block text-sm">
+              {selectedDraftIds.size} draft{' '}
+              {selectedDraftIds.size === 1 ? 'product' : 'products'} selected
+            </strong>
+            <span className="text-xs text-muted-foreground">
+              Activating makes them eligible for the storefront. Inventory
+              remains managed separately by location.
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedDraftIds(new Set())}
+            >
+              Clear selection
+            </Button>
+            <Button
+              size="sm"
+              disabled={!canManageCatalog}
+              onClick={() => setActivationTarget('selected')}
+            >
+              <CheckCircle2 /> Activate selected
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <div className="admin-table-card products-table">
         <div className="admin-table-head">
-          <span>Product</span>
+          <div className="flex items-center gap-3">
+            <Checkbox
+              checked={allVisibleDraftsSelected}
+              indeterminate={
+                visibleSelectedCount > 0 && !allVisibleDraftsSelected
+              }
+              disabled={!canManageCatalog || visibleDrafts.length === 0}
+              onCheckedChange={toggleVisibleDrafts}
+              aria-label={`Select all ${visibleDrafts.length} visible draft products`}
+            />
+            <span>Product</span>
+          </div>
           <span>Status</span>
           <span>Inventory</span>
           <span>Price</span>
@@ -1215,6 +1396,18 @@ function ProductsSection({
           products.map((product) => (
             <article className="admin-table-row" key={product.id}>
               <div className="product-cell">
+                {product.status === 'draft' ? (
+                  <Checkbox
+                    checked={selectedDraftIds.has(product.id)}
+                    disabled={!canManageCatalog}
+                    onCheckedChange={(checked) =>
+                      toggleDraft(product.id, checked)
+                    }
+                    aria-label={`Select ${product.name}`}
+                  />
+                ) : (
+                  <span className="size-4 shrink-0" aria-hidden="true" />
+                )}
                 {product.images[0]?.url ? (
                   <img src={product.images[0].url} alt="" />
                 ) : (
@@ -1308,6 +1501,46 @@ function ProductsSection({
         }}
         showNotice={showNotice}
       />
+      <Dialog
+        open={Boolean(activationTarget)}
+        onOpenChange={(open) => {
+          if (!open && !activationBusy) setActivationTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Activate {activationCount}{' '}
+              {activationCount === 1 ? 'product' : 'products'}?
+            </DialogTitle>
+            <DialogDescription>
+              Active products are eligible to appear on the storefront. This
+              changes publishing status only; stock availability stays
+              separate and no inventory is moved or added.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={activationBusy}
+              onClick={() => setActivationTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={activationBusy || activationCount === 0}
+              onClick={() => void activateDrafts()}
+            >
+              {activationBusy ? (
+                <RefreshCw className="spin" />
+              ) : (
+                <CheckCircle2 />
+              )}
+              {activationBusy ? 'Activating…' : 'Activate products'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={Boolean(pendingDelete)}
         onOpenChange={(open) => {

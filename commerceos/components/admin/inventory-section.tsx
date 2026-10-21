@@ -109,6 +109,7 @@ export function InventorySection({
   const [sort, setSort] = useState<InventorySort>('attention');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selected, setSelected] = useState<RetailProduct | null>(null);
+  const initialLocationChosen = useRef(false);
 
   const loadInventory = useCallback(async () => {
     setLoading(true);
@@ -135,6 +136,30 @@ export function InventorySection({
   useEffect(() => {
     void loadInventory();
   }, [loadInventory]);
+
+  useEffect(() => {
+    if (initialLocationChosen.current || data.locations.length === 0) return;
+
+    const onHandByLocation = new Map<string, number>();
+    for (const item of data.products) {
+      if (!item.locationId) continue;
+      onHandByLocation.set(
+        item.locationId,
+        (onHandByLocation.get(item.locationId) ?? 0) + item.onHand,
+      );
+    }
+    const preferredLocation = data.locations
+      .filter((location) => location.status === 'active')
+      .sort((left, right) => {
+        const stockDifference =
+          (onHandByLocation.get(right.id) ?? right.inventoryUnits ?? 0) -
+          (onHandByLocation.get(left.id) ?? left.inventoryUnits ?? 0);
+        return stockDifference || left.name.localeCompare(right.name);
+      })[0];
+
+    initialLocationChosen.current = true;
+    if (preferredLocation) setLocationFilter(preferredLocation.id);
+  }, [data.locations, data.products]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
@@ -387,6 +412,10 @@ export function InventorySection({
             <span>
               Scope: {selectedLocation}. Available = on hand − reserved.
             </span>
+            <span>
+              Publishing is shown separately from stock health; draft products
+              can still hold physical inventory.
+            </span>
           </div>
           <span>
             {lastRefreshedAt
@@ -409,7 +438,7 @@ export function InventorySection({
               <span>Reading stock balances for every active location.</span>
             </div>
           ) : visibleRows.length ? (
-            <Table className="min-w-[1120px]">
+            <Table className="min-w-[1200px]">
               <TableHeader>
                 <TableRow>
                   <TableHead className="pl-4">Product / model</TableHead>
@@ -419,7 +448,8 @@ export function InventorySection({
                   <TableHead className="text-right">Reserved</TableHead>
                   <TableHead className="text-right">Available</TableHead>
                   <TableHead className="text-right">Reorder at</TableHead>
-                  <TableHead>Status / last movement</TableHead>
+                  <TableHead>Publishing</TableHead>
+                  <TableHead>Stock health / last movement</TableHead>
                   <TableHead className="pr-4 text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -489,6 +519,19 @@ export function InventorySection({
                       </TableCell>
                       <TableCell className="text-right text-sm font-semibold">
                         {item.reorderPoint}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            item.productStatus === 'active'
+                              ? 'secondary'
+                              : 'outline'
+                          }
+                        >
+                          {item.productStatus
+                            ? statusLabel(item.productStatus)
+                            : 'Not reported'}
+                        </Badge>
                       </TableCell>
                       <TableCell className="min-w-48 whitespace-normal">
                         <Badge

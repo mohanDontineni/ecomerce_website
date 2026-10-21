@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Banknote,
+  Download,
   Eye,
   Loader2,
   Package,
@@ -44,13 +45,25 @@ import {
   RetailStatusBadge,
 } from './shared';
 import {
+  ADMIN_SESSION_EXPIRED_EVENT,
   dateLabel,
   normalizeRetailSaleDetail,
   retailRequest,
   statusLabel,
   type RetailModuleProps,
   type RetailSale,
+  type RetailTender,
 } from './types';
+
+function tenderMethodLabel(tender: RetailTender): string {
+  if (tender.kind !== 'other') return statusLabel(tender.kind);
+  const provider = tender.provider?.trim();
+  if (!provider || provider.toLowerCase() === 'mdcart') return 'Other';
+  if (provider.toLowerCase() === 'paypal') return 'PayPal';
+  if (provider.toLowerCase() === 'venmo') return 'Venmo';
+  if (provider.toLowerCase() === 'zelle') return 'Zelle';
+  return provider;
+}
 
 export function SalesSection({
   data,
@@ -64,9 +77,28 @@ export function SalesSection({
   const [status, setStatus] = useState('all');
   const [selected, setSelected] = useState<RetailSale | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoaded, setDetailLoaded] = useState(false);
+  const [detailError, setDetailError] = useState('');
   const [refunding, setRefunding] = useState(false);
+  const [downloadingBill, setDownloadingBill] = useState(false);
   const refundKeys = useRef(new Map<string, string>());
+  const saleDetailRequestId = useRef(0);
+  const saleDetailAbortController = useRef<AbortController | null>(null);
+  const selectedSaleId = useRef<string | null>(null);
+  const billDownloadRequestId = useRef(0);
+  const billDownloadAbortController = useRef<AbortController | null>(null);
   const canRefund = data.user?.permissions.includes('sales.refund') ?? false;
+
+  useEffect(() => {
+    return () => {
+      saleDetailRequestId.current += 1;
+      saleDetailAbortController.current?.abort();
+      saleDetailAbortController.current = null;
+      billDownloadRequestId.current += 1;
+      billDownloadAbortController.current?.abort();
+      billDownloadAbortController.current = null;
+    };
+  }, []);
 
   const sales = useMemo(
     () =>
@@ -85,10 +117,15 @@ export function SalesSection({
     [data.sales, locationId, query, status],
   );
   const completed = sales.filter((sale) => sale.status === 'completed');
-  const revenueCents = completed.reduce(
-    (sum, sale) => sum + sale.totalCents,
-    0,
-  );
+  const revenueByCurrency = new Map<string, number>();
+  for (const sale of completed) {
+    const saleCurrency = sale.currency || currency;
+    revenueByCurrency.set(
+      saleCurrency,
+      (revenueByCurrency.get(saleCurrency) ?? 0) + sale.totalCents,
+    );
+  }
+  if (revenueByCurrency.size === 0) revenueByCurrency.set(currency, 0);
   const itemCount = sales.reduce(
     (sum, sale) =>
       sum +
@@ -99,76 +136,112 @@ export function SalesSection({
   );
 
   async function openSale(sale: RetailSale) {
+    saleDetailAbortController.current?.abort();
+    billDownloadRequestId.current += 1;
+    billDownloadAbortController.current?.abort();
+    billDownloadAbortController.current = null;
+    setDownloadingBill(false);
+    const requestId = saleDetailRequestId.current + 1;
+    const abortController = new AbortController();
+    saleDetailRequestId.current = requestId;
+    saleDetailAbortController.current = abortController;
+    selectedSaleId.current = sale.id;
     setSelected(sale);
     setDetailLoading(true);
+    setDetailLoaded(false);
+    setDetailError('');
     try {
       const result = await retailRequest<unknown>(
         apiBase + '/sales/' + sale.id,
+        { signal: abortController.signal },
       );
+      if (saleDetailRequestId.current !== requestId) return;
       setSelected(normalizeRetailSaleDetail(result));
+      setDetailLoaded(true);
     } catch (error) {
-      notify(
+      if (
+        abortController.signal.aborted ||
+        saleDetailRequestId.current !== requestId
+      ) {
+        return;
+      }
+      const message =
         error instanceof Error
           ? error.message
-          : 'Sale details could not be loaded.',
-        'error',
-      );
+          : 'Sale details could not be loaded.';
+      setDetailError(message);
+      notify(message, 'error');
     } finally {
-      setDetailLoading(false);
+      if (saleDetailRequestId.current === requestId) {
+        saleDetailAbortController.current = null;
+        setDetailLoading(false);
+      }
     }
   }
 
+  function closeSale() {
+    saleDetailRequestId.current += 1;
+    saleDetailAbortController.current?.abort();
+    saleDetailAbortController.current = null;
+    billDownloadRequestId.current += 1;
+    billDownloadAbortController.current?.abort();
+    billDownloadAbortController.current = null;
+    selectedSaleId.current = null;
+    setDetailLoading(false);
+    setDetailLoaded(false);
+    setDetailError('');
+    setDownloadingBill(false);
+    setSelected(null);
+  }
+
   async function refundSale() {
-    if (!selected) return;
-    const includesCash = selected.tenders?.some(
-      (tender) =>
-        tender.kind === 'cash' &&
-        (tender.direction ?? 'payment') === 'payment' &&
-        tender.status === 'captured' &&
-        tender.amountCents > 0,
-    );
-    const refundShift = includesCash
-      ? (data.shifts.find(
-          (shift) => shift.id === selected.shiftId && shift.status === 'open',
-        ) ??
-        data.shifts.find((shift) => {
-          return (
-            shift.status === 'open' &&
-            (shift.locationId === selected.locationId ||
-              data.registers.find(
-                (candidate) => candidate.id === shift.registerId,
-              )?.locationId === selected.locationId)
-          );
-        }))
-      : undefined;
-    if (includesCash && !refundShift) {
+    if (!selected || !detailLoaded) return;
+    const sale = selected;
+    const refundShift =
+      data.shifts.find(
+        (shift) =>
+          shift.id === sale.shiftId &&
+          shift.status === 'open' &&
+          shift.currency === sale.currency,
+      ) ??
+      data.shifts.find((shift) => {
+        return (
+          shift.status === 'open' &&
+          shift.currency === sale.currency &&
+          (shift.locationId === sale.locationId ||
+            data.registers.find(
+              (candidate) => candidate.id === shift.registerId,
+            )?.locationId === sale.locationId)
+        );
+      });
+    if (!refundShift) {
       notify(
-        'Open a register shift at this sale location before issuing a cash refund.',
+        `Open a ${sale.currency} register shift at this sale location before issuing a refund.`,
         'error',
       );
       return;
     }
     if (
       !window.confirm(
-        'Refund the full remaining amount for ' + selected.receiptNumber + '?',
+        'Refund the full remaining amount for ' + sale.receiptNumber + '?',
       )
     )
       return;
     setRefunding(true);
     try {
       const idempotencyKey =
-        refundKeys.current.get(selected.id) ?? crypto.randomUUID();
-      refundKeys.current.set(selected.id, idempotencyKey);
-      await retailRequest(apiBase + '/sales/' + selected.id + '/refund', {
+        refundKeys.current.get(sale.id) ?? crypto.randomUUID();
+      refundKeys.current.set(sale.id, idempotencyKey);
+      await retailRequest(apiBase + '/sales/' + sale.id + '/refund', {
         method: 'POST',
         body: JSON.stringify({
           idempotencyKey,
-          refundShiftId: refundShift?.id,
+          refundShiftId: refundShift.id,
         }),
       });
-      refundKeys.current.delete(selected.id);
-      notify(selected.receiptNumber + ' refunded.');
-      setSelected(null);
+      refundKeys.current.delete(sale.id);
+      notify(sale.receiptNumber + ' refunded.');
+      if (selectedSaleId.current === sale.id) closeSale();
       await refresh();
     } catch (error) {
       notify(
@@ -182,6 +255,68 @@ export function SalesSection({
     }
   }
 
+  async function downloadBill() {
+    if (!selected) return;
+    const sale = selected;
+    billDownloadAbortController.current?.abort();
+    const requestId = billDownloadRequestId.current + 1;
+    const abortController = new AbortController();
+    billDownloadRequestId.current = requestId;
+    billDownloadAbortController.current = abortController;
+    setDownloadingBill(true);
+    try {
+      const response = await fetch(
+        `${apiBase}/sales/${encodeURIComponent(sale.id)}/receipt`,
+        { cache: 'no-store', signal: abortController.signal },
+      );
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
+        }
+        const result = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(result?.error || 'The bill could not be downloaded.');
+      }
+      const disposition = response.headers.get('content-disposition') ?? '';
+      const filename =
+        /filename="?([^";]+)"?/i.exec(disposition)?.[1] ||
+        `${sale.receiptNumber}.html`;
+      if (billDownloadRequestId.current !== requestId) return;
+      const blobUrl = URL.createObjectURL(await response.blob());
+      if (billDownloadRequestId.current !== requestId) {
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = filename.replace(/[^A-Za-z0-9._-]+/g, '-');
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(blobUrl);
+      notify(`${sale.receiptNumber} downloaded.`);
+    } catch (error) {
+      if (
+        abortController.signal.aborted ||
+        billDownloadRequestId.current !== requestId
+      ) {
+        return;
+      }
+      notify(
+        error instanceof Error
+          ? error.message
+          : 'The bill could not be downloaded.',
+        'error',
+      );
+    } finally {
+      if (billDownloadRequestId.current === requestId) {
+        billDownloadAbortController.current = null;
+        setDownloadingBill(false);
+      }
+    }
+  }
+
   return (
     <>
       <RetailSectionHeading
@@ -192,13 +327,18 @@ export function SalesSection({
           <Badge variant="secondary">{sales.length} matching sales</Badge>
         }
       />
-      <div className="mb-5 grid gap-4 sm:grid-cols-3">
-        <RetailMetric
-          label="Net sales"
-          value={money(revenueCents, currency)}
-          detail="Completed receipts"
-          icon={<TrendingUp />}
-        />
+      <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[...revenueByCurrency.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([saleCurrency, revenueCents]) => (
+            <RetailMetric
+              key={saleCurrency}
+              label={`Net sales · ${saleCurrency}`}
+              value={money(revenueCents, saleCurrency)}
+              detail="Completed receipts"
+              icon={<TrendingUp />}
+            />
+          ))}
         <RetailMetric
           label="Transactions"
           value={completed.length}
@@ -227,7 +367,7 @@ export function SalesSection({
           aria-label="Sale status"
           value={status}
           onChange={(event) => setStatus(event.target.value)}
-          className="sm:w-52"
+          className="w-full sm:w-52"
         >
           <NativeSelectOption value="all">All statuses</NativeSelectOption>
           <NativeSelectOption value="completed">Completed</NativeSelectOption>
@@ -306,7 +446,9 @@ export function SalesSection({
 
       <Sheet
         open={Boolean(selected)}
-        onOpenChange={(open) => !open && setSelected(null)}
+        onOpenChange={(open) => {
+          if (!open && !refunding && !downloadingBill) closeSale();
+        }}
       >
         <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
           <SheetHeader className="border-b">
@@ -318,10 +460,28 @@ export function SalesSection({
             </SheetDescription>
           </SheetHeader>
           {detailLoading ? (
-            <div className="grid min-h-64 place-items-center">
+            <output
+              className="grid min-h-64 place-items-center"
+              aria-live="polite"
+              aria-busy="true"
+            >
               <Loader2 className="size-6 animate-spin text-primary" />
+              <span className="sr-only">Loading sale details…</span>
+            </output>
+          ) : detailError && selected ? (
+            <div className="m-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm">
+              <strong className="block">Sale details unavailable</strong>
+              <p className="mt-1 text-muted-foreground">{detailError}</p>
+              <Button
+                className="mt-3"
+                size="sm"
+                variant="outline"
+                onClick={() => void openSale(selected)}
+              >
+                Try again
+              </Button>
             </div>
-          ) : selected ? (
+          ) : selected && detailLoaded ? (
             <div className="space-y-5 px-4 pb-6">
               <div className="grid grid-cols-2 gap-3 rounded-xl bg-muted p-4 text-sm sm:grid-cols-4">
                 <span>
@@ -390,12 +550,15 @@ export function SalesSection({
                         key={tender.id}
                         className="flex items-center justify-between gap-3 p-3 text-sm"
                       >
-                        <span>
-                          <strong className="capitalize">
-                            {statusLabel(tender.kind)}
+                        <span className="min-w-0">
+                          <strong className="block truncate">
+                            {tenderMethodLabel(tender)}
                           </strong>
-                          <small className="ml-2 text-muted-foreground">
-                            {tender.providerReference || tender.status}
+                          <small className="block truncate text-muted-foreground">
+                            {statusLabel(tender.status)}
+                            {tender.providerReference
+                              ? ` · ${tender.providerReference}`
+                              : ''}
                           </small>
                         </span>
                         <strong>
@@ -444,11 +607,25 @@ export function SalesSection({
             </div>
           ) : null}
           <SheetFooter className="sticky bottom-0 border-t bg-card">
-            {canRefund && selected?.status === 'completed' ? (
+            {selected && detailLoaded ? (
+              <Button
+                variant="outline"
+                onClick={() => void downloadBill()}
+                disabled={downloadingBill || refunding}
+              >
+                {downloadingBill ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Download />
+                )}
+                {downloadingBill ? 'Preparing…' : 'Download bill'}
+              </Button>
+            ) : null}
+            {canRefund && detailLoaded && selected?.status === 'completed' ? (
               <Button
                 variant="destructive"
                 onClick={() => void refundSale()}
-                disabled={refunding}
+                disabled={refunding || downloadingBill}
               >
                 {refunding ? (
                   <Loader2 className="animate-spin" />
@@ -458,7 +635,11 @@ export function SalesSection({
                 {refunding ? 'Refunding…' : 'Refund remaining amount'}
               </Button>
             ) : null}
-            <Button variant="outline" onClick={() => setSelected(null)}>
+            <Button
+              variant="outline"
+              onClick={closeSale}
+              disabled={refunding || downloadingBill}
+            >
               Close
             </Button>
           </SheetFooter>

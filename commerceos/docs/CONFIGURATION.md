@@ -19,9 +19,9 @@ configuration are not required.
 
 ## Application variables
 
-| Variable                    | Required                           | Secret | Description                                                                                                                        |
-| --------------------------- | ---------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_SITE_URL`      | Local: no; staging/production: yes | No     | Exact public origin used for canonical and social metadata, for example `https://shop.example.com`. Use no path or trailing slash. |
+| Variable                    | Required                            | Secret | Description                                                                                                                        |
+| --------------------------- | ----------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_SITE_URL`      | Local: no; staging/production: yes  | No     | Exact public origin used for canonical and social metadata, for example `https://shop.example.com`. Use no path or trailing slash. |
 | `MDCART_BOOTSTRAP_PASSWORD` | Hosted bootstrap and legacy upgrade | Yes    | One-time, 32-byte-or-longer owner password. Delete it after the forced password replacement.                                       |
 
 Copy `.env.example` to `.env.local` for local development. `.env.local` is
@@ -108,15 +108,20 @@ but not warehouses.
 
 POS requires an open shift for the selected register, and a cashier can post a
 sale only to a shift that same cashier opened. Opening a shift records
-opening cash; cash sales and cash refunds update expected cash; closing a shift
-records counted cash and the variance. Sale completion calculates prices, tax,
-stock availability, tender coverage, and change on the server. A unique
+opening cash and snapshots the store currency; cash sales and cash refunds
+update expected cash; closing a shift records counted cash and the variance.
+The store currency cannot be changed while any shift is open, preventing a
+drawer from mixing currencies. Sale completion calculates prices, tax, stock
+availability, tender coverage, and change on the server. A unique
 `Idempotency-Key` header protects checkout from duplicate submission.
 
 The current sale refund operation is a full refund. It creates reversing
 tenders, restores all sale quantities at the original location, and updates
-the shift's expected cash for a cash refund. Add a separately authorized
-partial-return workflow before advertising partial refunds.
+the processing shift's expected cash for a cash refund. Every refund, including
+a zero-value refund, requires an open shift at the sale location in the sale
+currency so the processing drawer and staff member remain attributable. Add a
+separately authorized partial-return workflow before advertising partial
+refunds.
 
 Supplier and purchase-order records are also D1-backed. A submitted purchase
 order targets one active location; receiving can be partial, cannot exceed the
@@ -125,28 +130,74 @@ movement records.
 
 Retail capabilities follow the existing team role:
 
-| Role             | Retail access                                                                                                        |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `owner`, `admin` | All retail, inventory, catalog-import, POS, register, purchasing, sales, and report permissions                      |
-| `cashier`        | Retail view, inventory view, POS sales, register shift management, and sales view                                    |
-| `purchasing`     | Retail view, inventory view/manage, supplier and purchase-order management, catalog imports, sales view, and reports |
-| `catalog`        | Retail and inventory view/manage plus catalog imports; no POS or purchasing                                          |
-| `fulfillment`    | Inventory, POS, registers, purchasing, sales, and reports; no catalog import                                         |
-| `support`        | Read-only retail, sales, and report access                                                                           |
+| Role             | Retail access                                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `owner`, `admin` | All retail, inventory, catalog-import, POS, register, purchasing, sales, report-view, and report-export permissions      |
+| `cashier`        | Retail view, inventory view, POS sales, register shift management, and sales view                                        |
+| `purchasing`     | Retail view, inventory view/manage, supplier and purchase-order management, catalog imports, sales view, and report view |
+| `catalog`        | Retail and inventory view/manage plus catalog imports; no POS or purchasing                                              |
+| `fulfillment`    | Inventory, POS, registers, purchasing, sales, and report view; no catalog import                                         |
+| `support`        | Read-only retail, sales, and report-view access                                                                          |
+
+### Retail reports and bill exports
+
+The **Retail hub → Reports & bills** tab is backed by server-side D1 queries,
+not the recent-item limits used by the overview screen. Reports can cover the
+whole store or one location, register, or shift for an inclusive date range.
+Selecting a location uses that location's configured IANA timezone for calendar
+day boundaries; all-store reports display and use the operator's browser
+timezone.
+Gross sales use the original sale time; refunds use the time and shift on the
+refund tender, so a refund processed by another drawer is reconciled to that
+drawer. Existing tenders created before the reporting migration fall back to
+the original sale shift when no refund-shift snapshot exists.
+The Bills table and sales CSV use the same event basis, so a bill refunded in a
+later period appears as refund activity in that later period instead of
+silently changing the earlier report. Selecting one shift switches the report
+to that shift's complete lifetime, regardless of the date controls, so its
+opening, expected, closing, and variance amounts are compared with the full
+set of sale and refund activity for that drawer.
+
+Users with `reports.view` can inspect the report dashboard. Bulk sales-line,
+product, shift, and register CSV files and grouped printable bill files require
+`reports.export`, which is granted only to owners and administrators. Users with
+`sales.view` can download individual bills; cashiers remain restricted to their
+own sales.
+Exports are private and non-cacheable, spreadsheet text is protected against
+formula execution, and each download is audited without copying customer data
+into the audit metadata. The maximum report window is 366 days, sales CSV files
+are limited to 10,000 lines, product summaries to 1,000 rows, shift summaries
+to 2,000 rows, register summaries to 2,000 rows, and grouped bill files to 100
+bills; use a smaller date/register scope when a larger result is rejected.
+
+Bills are self-contained printable HTML for broad Worker compatibility. Open a
+download in a browser and choose **Print → Save as PDF** when a PDF copy is
+needed. Receipts preserve sale-time line prices, discounts, tax, tender amount,
+cash tendered/change (for new sales), cashier, register, and shift. Store and
+location names/addresses are read from current configuration. Internal staff
+notes are intentionally excluded. A grouped bill book also labels report-period
+activity separately from the bill's original sale so later refunds are not
+mistaken for original-shift activity. Deployments that require legally immutable
+invoice identity should add sale-time seller and tax identity snapshots plus
+jurisdiction-specific sequential numbering.
 
 ### External payment terminals
 
-MDCart's current POS tender API is a cash accounting boundary, not a terminal
-or card-data adapter. The server rejects `card`, `gift_card`, `store_credit`,
-and `other` tenders even if the browser supplies a provider reference. It must
-never receive a PAN, CVV, PIN, magnetic-stripe/EMV payload, or terminal key.
+MDCart's current POS tender API is an accounting boundary, not a terminal or
+card-data adapter. It records physical `cash` and cashier-confirmed `Venmo`,
+`Zelle`, `PayPal`, or a described `Other` method. These manual choices record
+what staff says happened; MDCart does not transfer, authorize, verify, settle,
+reconcile, or externally refund those funds. Only physical cash changes drawer
+expectations. The server rejects `card`, `gift_card`, and `store_credit`. It
+must never receive a PAN, CVV, PIN, magnetic-stripe/EMV payload, or terminal
+key.
 
-To enable non-cash POS, implement a trusted server-side adapter that verifies a
-PCI-compliant terminal/provider response or webhook before writing a captured
-tender. Browser-supplied references alone are not proof of payment. Provider
-calls need their own idempotency, timeouts, retry reconciliation, refund API,
-and audit trail. MDCart does not currently drive, pair, discover, or settle
-external terminals.
+To automate or guarantee any non-cash POS payment, implement a trusted
+server-side adapter that verifies a PCI-compliant terminal/provider response
+or webhook before writing a captured tender. Browser-supplied method names or
+references are not proof of payment. Provider calls need their own
+idempotency, timeouts, retry reconciliation, refund API, and audit trail.
+MDCart does not currently drive, pair, discover, or settle external terminals.
 
 ## Bulk inventory import contract
 
@@ -156,11 +207,11 @@ suggestions happen before the reviewed rows are sent to the server.
 
 Choose one behavior for each file:
 
-| UI mode            | Server kind          | Effect                                                                                                                       | Required row values                                  |
-| ------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| UI mode            | Server kind          | Effect                                                                                                                       | Required row values                                                |
+| ------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | Catalog upsert     | `catalog_upsert`     | Creates a product family or updates/appends variants by SKU; an optional stock value becomes the location's on-hand quantity | Unique `sku` and product `name`; a blank price creates a free item |
-| Inventory snapshot | `inventory_snapshot` | Sets the selected location's on-hand quantity to an authoritative count                                                      | Existing `sku` and non-negative whole-number `stock` |
-| Inventory delta    | `inventory_delta`    | Adds a signed quantity to the selected location's current on-hand value                                                      | Existing `sku` and signed whole-number `stockDelta`  |
+| Inventory snapshot | `inventory_snapshot` | Sets the selected location's on-hand quantity to an authoritative count                                                      | Existing `sku` and non-negative whole-number `stock`               |
+| Inventory delta    | `inventory_delta`    | Adds a signed quantity to the selected location's current on-hand value                                                      | Existing `sku` and signed whole-number `stockDelta`                |
 
 Inventory-only modes consume only `sku` plus their selected quantity field;
 unrelated catalog columns are ignored. Catalog imports without an explicit

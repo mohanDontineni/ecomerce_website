@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  BarChart3,
   Building2,
   FileSpreadsheet,
   Loader2,
@@ -22,6 +23,7 @@ import { BulkImportSection } from './retail/bulk-import-section';
 import { LocationsSection } from './retail/locations-section';
 import { PosSection } from './retail/pos-section';
 import { PurchasingSection } from './retail/purchasing-section';
+import { ReportsSection } from './retail/reports-section';
 import { SalesSection } from './retail/sales-section';
 import { RetailFeedback } from './retail/shared';
 import {
@@ -50,6 +52,7 @@ const tabItems: Array<{
 }> = [
   { id: 'pos', label: 'Point of sale', icon: ShoppingCart },
   { id: 'sales', label: 'Sales', icon: ReceiptText },
+  { id: 'reports', label: 'Reports & bills', icon: BarChart3 },
   { id: 'purchasing', label: 'Purchasing', icon: Truck },
   { id: 'imports', label: 'Bulk import', icon: FileSpreadsheet },
   { id: 'locations', label: 'Locations', icon: Building2 },
@@ -58,6 +61,7 @@ const tabItems: Array<{
 const tabPermissions: Record<RetailTab, string[]> = {
   pos: ['pos.sell'],
   sales: ['sales.view'],
+  reports: ['reports.view'],
   purchasing: ['purchasing.manage'],
   imports: ['catalog.import'],
   locations: ['inventory.manage', 'register.configure'],
@@ -76,6 +80,7 @@ export function RetailHub({
   const [data, setData] = useState<RetailOverview>(EMPTY_RETAIL_OVERVIEW);
   const [detectedCurrency, setDetectedCurrency] = useState('USD');
   const [locationId, setLocationId] = useState('');
+  const [reportShiftId, setReportShiftId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [feedback, setFeedback] = useState<{
@@ -146,6 +151,16 @@ export function RetailHub({
       ),
     );
   }, [data.user?.permissions]);
+  const canViewReports = visibleTabItems.some((item) => item.id === 'reports');
+
+  const openShiftReport = useCallback((shiftId: string) => {
+    setReportShiftId(shiftId);
+    setTab('reports');
+  }, []);
+
+  const clearRequestedShift = useCallback(() => {
+    setReportShiftId(null);
+  }, []);
 
   useEffect(() => {
     if (
@@ -271,12 +286,25 @@ export function RetailHub({
           </div>
           {visibleTabItems.some((item) => item.id === 'pos') ? (
             <TabsContent value="pos">
-              <PosSection {...moduleProps} locationId={locationId} />
+              <PosSection
+                {...moduleProps}
+                locationId={locationId}
+                onViewShiftReport={canViewReports ? openShiftReport : undefined}
+              />
             </TabsContent>
           ) : null}
           {visibleTabItems.some((item) => item.id === 'sales') ? (
             <TabsContent value="sales">
               <SalesSection {...moduleProps} locationId={locationId} />
+            </TabsContent>
+          ) : null}
+          {visibleTabItems.some((item) => item.id === 'reports') ? (
+            <TabsContent value="reports">
+              <ReportsSection
+                {...moduleProps}
+                requestedShiftId={reportShiftId}
+                onRequestedShiftHandled={clearRequestedShift}
+              />
             </TabsContent>
           ) : null}
           {visibleTabItems.some((item) => item.id === 'purchasing') ? (

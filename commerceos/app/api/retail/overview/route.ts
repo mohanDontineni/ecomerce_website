@@ -66,17 +66,20 @@ export async function GET(request: Request) {
       db
         .prepare(
           `SELECT s.id, s.register_id, s.opened_by, s.closed_by, s.status,
+                  s.currency,
                   s.opening_cash_cents, s.expected_cash_cents,
                   s.closing_cash_cents, s.variance_cents, s.opened_at,
-                  s.closed_at, s.note, r.name AS register_name,
+                  s.closed_at, r.name AS register_name,
                   r.location_id, l.name AS location_name,
-                  u.display_name AS opened_by_name
+                  u.display_name AS opened_by_name,
+                  closer.display_name AS closed_by_name
            FROM register_shifts s
            JOIN retail_registers r ON r.id = s.register_id
            JOIN retail_locations l ON l.id = r.location_id
            JOIN users u ON u.id = s.opened_by
+           LEFT JOIN users closer ON closer.id = s.closed_by
            WHERE ? = 1 AND (? = 0 OR s.opened_by = ?)
-           ORDER BY s.opened_at DESC LIMIT 40`,
+           ORDER BY s.status = 'open' DESC, s.opened_at DESC LIMIT 500`,
         )
         .bind(canViewShifts ? 1 : 0, cashierOwnOnly ? 1 : 0, user.id)
         .all(),
@@ -125,7 +128,20 @@ export async function GET(request: Request) {
                   l.name AS location_name, r.name AS register_name,
                   u.display_name AS cashier_name,
                   COALESCE(SUM(si.quantity), 0) AS item_count,
-                  (SELECT group_concat(kind, ', ') FROM retail_sale_tenders
+                  (SELECT group_concat(
+                     CASE
+                       WHEN kind = 'other' AND TRIM(COALESCE(provider, '')) <> ''
+                         THEN CASE LOWER(TRIM(provider))
+                           WHEN 'venmo' THEN 'Venmo'
+                           WHEN 'zelle' THEN 'Zelle'
+                           WHEN 'paypal' THEN 'PayPal'
+                           ELSE TRIM(provider)
+                         END
+                       WHEN kind = 'cash' THEN 'Cash'
+                       ELSE REPLACE(kind, '_', ' ')
+                     END,
+                     ', '
+                   ) FROM retail_sale_tenders
                    WHERE sale_id = s.id AND direction = 'payment') AS tenders
            FROM retail_sales s
            JOIN retail_locations l ON l.id = s.location_id
@@ -280,6 +296,7 @@ export async function GET(request: Request) {
           registerId: row.register_id,
           locationId: row.location_id,
           status: row.status,
+          currency: row.currency,
           openingCashCents: Number(row.opening_cash_cents ?? 0),
           expectedCashCents: Number(row.expected_cash_cents ?? 0),
           closingCashCents: row.closing_cash_cents,
@@ -287,6 +304,7 @@ export async function GET(request: Request) {
           openedAt: row.opened_at,
           closedAt: row.closed_at,
           openedByName: row.opened_by_name,
+          closedByName: row.closed_by_name,
           registerName: row.register_name,
           locationName: row.location_name,
         };
@@ -330,6 +348,7 @@ export async function GET(request: Request) {
               updatedAt: row.updated_at,
               imageUrl: row.image_url,
               status: row.variant_status,
+              productStatus: row.product_status,
             };
           })
         : [],

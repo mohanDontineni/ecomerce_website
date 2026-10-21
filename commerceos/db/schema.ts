@@ -769,6 +769,7 @@ export const registerShifts = sqliteTable(
     status: text('status', { enum: ['open', 'closed'] })
       .notNull()
       .default('open'),
+    currency: text('currency').notNull().default('USD'),
     openingCashCents: integer('opening_cash_cents').notNull().default(0),
     expectedCashCents: integer('expected_cash_cents').notNull().default(0),
     closingCashCents: integer('closing_cash_cents'),
@@ -786,9 +787,17 @@ export const registerShifts = sqliteTable(
       table.openedBy,
       table.openedAt,
     ),
+    index('idx_register_shifts_register_opened').on(
+      table.registerId,
+      table.openedAt,
+    ),
     check(
       'register_shift_cash_nonnegative',
       sql`${table.openingCashCents} >= 0 AND ${table.expectedCashCents} >= 0 AND (${table.closingCashCents} IS NULL OR ${table.closingCashCents} >= 0)`,
+    ),
+    check(
+      'register_shift_currency_present',
+      sql`length(${table.currency}) BETWEEN 3 AND 8`,
     ),
   ],
 );
@@ -840,6 +849,10 @@ export const retailSales = sqliteTable(
       table.completedAt,
     ),
     index('idx_retail_sales_shift_created').on(table.shiftId, table.createdAt),
+    index('idx_retail_sales_register_completed').on(
+      table.registerId,
+      table.completedAt,
+    ),
     index('idx_retail_sales_status_created').on(table.status, table.createdAt),
     check(
       'retail_sales_totals_nonnegative',
@@ -895,6 +908,12 @@ export const retailSaleTenders = sqliteTable(
     saleId: text('sale_id')
       .notNull()
       .references(() => retailSales.id, { onDelete: 'restrict' }),
+    shiftId: text('shift_id').references(() => registerShifts.id, {
+      onDelete: 'restrict',
+    }),
+    actorUserId: text('actor_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     kind: text('kind', {
       enum: ['cash', 'card', 'gift_card', 'store_credit', 'other'],
     }).notNull(),
@@ -902,6 +921,8 @@ export const retailSaleTenders = sqliteTable(
       .notNull()
       .default('payment'),
     amountCents: integer('amount_cents').notNull(),
+    tenderedAmountCents: integer('tendered_amount_cents'),
+    changeCents: integer('change_cents'),
     provider: text('provider'),
     providerReference: text('provider_reference'),
     status: text('status', {
@@ -920,7 +941,22 @@ export const retailSaleTenders = sqliteTable(
       table.provider,
       table.providerReference,
     ),
-    check('retail_sale_tender_amount_positive', sql`${table.amountCents} > 0`),
+    index('idx_retail_sale_tenders_shift_created').on(
+      table.shiftId,
+      table.createdAt,
+    ),
+    index('idx_retail_sale_tenders_direction_created').on(
+      table.direction,
+      table.createdAt,
+    ),
+    check(
+      'retail_sale_tender_amount_valid',
+      sql`${table.amountCents} > 0 OR (${table.amountCents} = 0 AND ${table.kind} = 'other' AND ${table.direction} = 'refund' AND ${table.status} = 'refunded' AND ${table.provider} = 'mdcart' AND ${table.providerReference} IS NULL AND ${table.tenderedAmountCents} = 0 AND ${table.changeCents} = 0)`,
+    ),
+    check(
+      'retail_sale_tender_cash_details_valid',
+      sql`(${table.tenderedAmountCents} IS NULL AND ${table.changeCents} IS NULL) OR (${table.tenderedAmountCents} >= ${table.amountCents} AND ${table.changeCents} = ${table.tenderedAmountCents} - ${table.amountCents})`,
+    ),
   ],
 );
 

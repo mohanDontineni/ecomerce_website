@@ -13,6 +13,7 @@ type RefundSale = {
   receipt_number: string;
   location_id: string;
   status: string;
+  currency: string;
   total_cents: number;
 };
 
@@ -145,7 +146,8 @@ export async function POST(
     const [sale, lines, tenders] = await Promise.all([
       db
         .prepare(
-          `SELECT id, receipt_number, location_id, status, total_cents
+          `SELECT id, receipt_number, location_id, status, currency,
+                  total_cents
            FROM retail_sales WHERE id = ? LIMIT 1`,
         )
         .bind(id)
@@ -180,49 +182,49 @@ export async function POST(
     if (lines.results.length === 0) {
       throw new RetailConflictError('This sale has no refundable line items.');
     }
+    if (sale.total_cents > 0 && tenders.results.length === 0) {
+      throw new RetailConflictError(
+        'This paid sale has no captured tender to reverse. Reconcile the payment record before refunding it.',
+        'PAYMENT_RECONCILIATION_REQUIRED',
+      );
+    }
 
     const cashRefundCents = tenders.results.reduce(
       (total, tender) =>
         tender.kind === 'cash' ? total + tender.amount_cents : total,
       0,
     );
-    let refundShiftId: string | null = null;
-    if (cashRefundCents > 0) {
-      if (!requestedRefundShiftId) {
-        throw new RetailConflictError(
-          'Open a register shift at this sale location before issuing a cash refund.',
-          'OPEN_SHIFT_REQUIRED',
-        );
-      }
-      const refundShift = await db
-        .prepare(
-          `SELECT s.id, s.expected_cash_cents FROM register_shifts s
-           JOIN retail_registers r ON r.id = s.register_id
-           JOIN retail_locations l ON l.id = r.location_id
-           WHERE s.id = ? AND s.status = 'open' AND r.status = 'active'
-             AND l.status = 'active' AND r.location_id = ?
-           LIMIT 1`,
-        )
-        .bind(requestedRefundShiftId, sale.location_id)
-        .first<{ id: string; expected_cash_cents: number }>();
-      if (!refundShift) {
-        throw new RetailConflictError(
-          'The cash-refund shift is not open at this sale location.',
-          'OPEN_SHIFT_REQUIRED',
-        );
-      }
-      if (refundShift.expected_cash_cents < cashRefundCents) {
-        throw new RetailConflictError(
-          'The open shift does not have enough expected cash for this refund.',
-          'INSUFFICIENT_EXPECTED_CASH',
-        );
-      }
-      refundShiftId = refundShift.id;
-    } else if (requestedRefundShiftId) {
-      throw new RetailInputError(
-        'A refund shift should only be supplied for a sale containing cash.',
+    if (!requestedRefundShiftId) {
+      throw new RetailConflictError(
+        'Open a register shift at this sale location before issuing a refund.',
+        'OPEN_SHIFT_REQUIRED',
       );
     }
+    const refundShift = await db
+      .prepare(
+        `SELECT s.id, s.expected_cash_cents FROM register_shifts s
+         JOIN retail_registers r ON r.id = s.register_id
+         JOIN retail_locations l ON l.id = r.location_id
+         WHERE s.id = ? AND s.status = 'open' AND r.status = 'active'
+           AND l.status = 'active' AND r.location_id = ?
+           AND s.currency = ?
+         LIMIT 1`,
+      )
+      .bind(requestedRefundShiftId, sale.location_id, sale.currency)
+      .first<{ id: string; expected_cash_cents: number }>();
+    if (!refundShift) {
+      throw new RetailConflictError(
+        `Choose an open ${sale.currency} shift at this sale location for the refund.`,
+        'OPEN_SHIFT_REQUIRED',
+      );
+    }
+    if (refundShift.expected_cash_cents < cashRefundCents) {
+      throw new RetailConflictError(
+        'The open shift does not have enough expected cash for this refund.',
+        'INSUFFICIENT_EXPECTED_CASH',
+      );
+    }
+    const refundShiftId = refundShift.id;
 
     const now = isoNow();
     const attemptResponse = JSON.stringify({
@@ -247,34 +249,47 @@ export async function POST(
         .prepare(
           `UPDATE retail_sales SET status = 'refunded', updated_at = ?
            WHERE id = ? AND status = 'completed'
-             AND (
-               ? = 0 OR EXISTS (
-                 SELECT 1 FROM register_shifts s
-                 JOIN retail_registers r ON r.id = s.register_id
-                 WHERE s.id = ? AND s.status = 'open'
-                   AND r.status = 'active'
-                   AND r.location_id = retail_sales.location_id
-                   AND s.expected_cash_cents >= ?
-               )
+             AND EXISTS (
+               SELECT 1 FROM register_shifts s
+               JOIN retail_registers r ON r.id = s.register_id
+               WHERE s.id = ? AND s.status = 'open'
+                 AND r.status = 'active'
+                 AND r.location_id = retail_sales.location_id
+                 AND s.currency = retail_sales.currency
+                 AND (? = 0 OR s.expected_cash_cents >= ?)
              )`,
         )
         .bind(
           now,
           id,
+          refundShiftId,
           cashRefundCents > 0 ? 1 : 0,
-          refundShiftId ?? '',
           cashRefundCents,
         ),
     ];
 
-    for (const tender of tenders.results) {
+    const refundableTenders =
+      tenders.results.length > 0
+        ? tenders.results
+        : [
+            {
+              kind: 'other',
+              amount_cents: 0,
+              provider: 'mdcart',
+              provider_reference: null,
+            },
+          ];
+    for (const tender of refundableTenders) {
+      const keepsCashDetails =
+        tender.kind === 'cash' || tender.amount_cents === 0;
       statements.push(
         db
           .prepare(
             `INSERT INTO retail_sale_tenders
-              (id, sale_id, kind, direction, amount_cents, provider,
+              (id, sale_id, shift_id, actor_user_id, kind, direction,
+               amount_cents, tendered_amount_cents, change_cents, provider,
                provider_reference, status, created_at)
-             SELECT ?, ?, ?, 'refund', ?, ?, ?, 'refunded', ?
+             SELECT ?, ?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, 'refunded', ?
              WHERE EXISTS (
                SELECT 1 FROM retail_sales
                WHERE id = ? AND status = 'refunded' AND updated_at = ?
@@ -283,8 +298,12 @@ export async function POST(
           .bind(
             createRetailId('tender'),
             id,
+            refundShiftId,
+            user.id,
             tender.kind,
             tender.amount_cents,
+            keepsCashDetails ? tender.amount_cents : null,
+            keepsCashDetails ? 0 : null,
             tender.provider,
             tender.provider_reference,
             now,
@@ -508,7 +527,7 @@ export async function POST(
       throw new RetailConflictError(
         cashRefundCents > 0
           ? 'The cash-refund shift closed or no longer had enough expected cash before the refund was committed.'
-          : 'This sale was already refunded.',
+          : 'The refund shift closed before the refund was committed, or the sale was already refunded.',
       );
     }
 

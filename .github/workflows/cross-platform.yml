@@ -1,0 +1,41 @@
+name: Cross-platform build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: commerceos
+    env:
+      # GitHub's Windows runner is Windows Server. This job proves source/build
+      # compatibility; the documented direct deployment host is Windows 11.
+      MDCART_SOURCE_BUILD_ONLY: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.25.0
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Apply migrations to an isolated local database
+        run: pnpm db:local:apply
+      - name: Validate deployment build
+        run: pnpm deploy:check

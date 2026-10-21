@@ -1,6 +1,7 @@
 export type RetailTab =
   | 'pos'
   | 'sales'
+  | 'reports'
   | 'purchasing'
   | 'imports'
   | 'locations';
@@ -44,6 +45,7 @@ export type RetailShift = {
   registerId: string;
   locationId?: string;
   status: 'open' | 'closed';
+  currency: string;
   openingCashCents: number;
   expectedCashCents: number;
   closingCashCents?: number | null;
@@ -51,6 +53,9 @@ export type RetailShift = {
   openedAt: string;
   closedAt?: string | null;
   openedByName?: string | null;
+  closedByName?: string | null;
+  registerName?: string | null;
+  locationName?: string | null;
 };
 
 export type RetailProduct = {
@@ -77,6 +82,9 @@ export type RetailProduct = {
   parLevel?: number | null;
   updatedAt?: string | null;
   imageUrl?: string | null;
+  /** Product-level storefront publishing state. */
+  productStatus?: 'draft' | 'active' | 'archived';
+  /** Variant-level catalog state. */
   status?: 'active' | 'archived';
 };
 
@@ -95,12 +103,17 @@ export type RetailSaleItem = {
 
 export type RetailTender = {
   id: string;
+  shiftId?: string | null;
+  actorName?: string | null;
   kind: 'cash' | 'card' | 'gift_card' | 'store_credit' | 'other';
-  direction?: 'payment' | 'refund';
-  amountCents: number;
-  status: string;
   provider?: string | null;
   providerReference?: string | null;
+  direction?: 'payment' | 'refund';
+  amountCents: number;
+  tenderedAmountCents?: number | null;
+  changeCents?: number | null;
+  status: string;
+  createdAt?: string | null;
 };
 
 export type RetailSale = {
@@ -396,6 +409,7 @@ export function normalizeRetailOverview(payload: unknown): {
       registerId: textValue(row.registerId ?? row.register_id),
       locationId: textValue(row.locationId ?? row.location_id),
       status: textValue(row.status, 'closed') as RetailShift['status'],
+      currency: textValue(row.currency, 'USD'),
       openingCashCents: numberValue(
         row.openingCashCents ?? row.opening_cash_cents,
       ),
@@ -413,6 +427,9 @@ export function normalizeRetailOverview(payload: unknown): {
       openedAt: textValue(row.openedAt ?? row.opened_at),
       closedAt: optionalText(row.closedAt ?? row.closed_at),
       openedByName: optionalText(row.openedByName ?? row.opened_by_name),
+      closedByName: optionalText(row.closedByName ?? row.closed_by_name),
+      registerName: optionalText(row.registerName ?? row.register_name),
+      locationName: optionalText(row.locationName ?? row.location_name),
     }),
   );
   const catalogSource = root.products ?? root.catalog;
@@ -468,11 +485,15 @@ export function normalizeRetailOverview(payload: unknown): {
             : undefined,
       updatedAt: optionalText(row.updatedAt ?? row.updated_at),
       imageUrl: optionalText(row.imageUrl ?? row.image_url),
+      productStatus:
+        row.productStatus !== undefined || row.product_status !== undefined
+          ? (textValue(
+              row.productStatus ?? row.product_status,
+              'draft',
+            ) as RetailProduct['productStatus'])
+          : undefined,
       status: textValue(
-        row.status ??
-          row.variantStatus ??
-          row.variant_status ??
-          row.product_status,
+        row.variantStatus ?? row.variant_status ?? row.status,
         'active',
       ) as RetailProduct['status'],
     };
@@ -668,17 +689,37 @@ export function normalizeRetailSaleDetail(payload: unknown): RetailSale {
     })),
     tenders: records(source.tenders ?? row.tenders).map((tender) => ({
       id: textValue(tender.id),
+      shiftId: optionalText(tender.shiftId ?? tender.shift_id),
+      actorName: optionalText(tender.actorName ?? tender.actor_name),
       kind: textValue(tender.kind, 'other') as RetailTender['kind'],
+      provider: optionalText(tender.provider),
+      providerReference: optionalText(
+        tender.providerReference ?? tender.provider_reference,
+      ),
       direction: textValue(
         tender.direction,
         'payment',
       ) as RetailTender['direction'],
       amountCents: numberValue(tender.amountCents ?? tender.amount_cents),
+      tenderedAmountCents:
+        tender.tenderedAmountCents === null ||
+        tender.tendered_amount_cents === null
+          ? null
+          : tender.tenderedAmountCents !== undefined ||
+              tender.tendered_amount_cents !== undefined
+            ? numberValue(
+                tender.tenderedAmountCents ?? tender.tendered_amount_cents,
+              )
+            : undefined,
+      changeCents:
+        tender.changeCents === null || tender.change_cents === null
+          ? null
+          : tender.changeCents !== undefined ||
+              tender.change_cents !== undefined
+            ? numberValue(tender.changeCents ?? tender.change_cents)
+            : undefined,
       status: textValue(tender.status),
-      provider: optionalText(tender.provider),
-      providerReference: optionalText(
-        tender.providerReference ?? tender.provider_reference,
-      ),
+      createdAt: optionalText(tender.createdAt ?? tender.created_at),
     })),
   };
 }

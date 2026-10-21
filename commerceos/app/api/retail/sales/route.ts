@@ -13,7 +13,22 @@ import {
   RetailNotFoundError,
 } from '@/lib/server/retail';
 
-type RequestedLine = { variantId?: string; quantity?: unknown };
+type SaleRequestBody = {
+  idempotencyKey?: unknown;
+  status?: unknown;
+  locationId?: unknown;
+  registerId?: unknown;
+  shiftId?: unknown;
+  items?: unknown;
+  lines?: unknown;
+  discountCents?: unknown;
+  tender?: unknown;
+  tenders?: unknown;
+  customerName?: unknown;
+  customerEmail?: unknown;
+  note?: unknown;
+};
+
 type SaleVariant = {
   variant_id: string;
   product_id: string;
@@ -34,6 +49,152 @@ const tenderKinds = new Set([
   'store_credit',
   'other',
 ]);
+
+type NormalizedTender = {
+  kind: string;
+  amountCents: number;
+  provider: string;
+  providerReference: string | null;
+};
+
+function bodyRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function optionalText(
+  value: unknown,
+  label: string,
+  maxLength: number,
+): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new RetailInputError(`${label} must be text.`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > maxLength) {
+    throw new RetailInputError(
+      `${label} must be ${maxLength.toLocaleString('en-US')} characters or fewer.`,
+    );
+  }
+  return trimmed;
+}
+
+function singleLineText(
+  value: unknown,
+  label: string,
+  maxLength: number,
+): string | null {
+  const trimmed = optionalText(value, label, maxLength);
+  if (trimmed && /\p{Cc}/u.test(trimmed)) {
+    throw new RetailInputError(`${label} must be a single line of text.`);
+  }
+  return trimmed;
+}
+
+function normalizeManualProvider(value: unknown): string {
+  const provider = singleLineText(value, 'Payment method', 80);
+  if (!provider) {
+    throw new RetailInputError(
+      'Describe how the payment was made when Other is selected.',
+      'PAYMENT_METHOD_REQUIRED',
+    );
+  }
+  const normalized = provider.replace(/\s+/g, ' ');
+  const knownProvider = normalized.toLowerCase();
+  if (knownProvider === 'venmo' || knownProvider === 'zelle') {
+    return knownProvider;
+  }
+  if (knownProvider === 'paypal' || knownProvider === 'pay pal') {
+    return 'paypal';
+  }
+  if (
+    knownProvider === 'cash' ||
+    knownProvider === 'mdcart' ||
+    knownProvider === 'other'
+  ) {
+    throw new RetailInputError(
+      knownProvider === 'cash' || knownProvider === 'mdcart'
+        ? 'Choose Cash for cash payments instead of recording it as Other.'
+        : 'Describe how the payment was made instead of entering Other.',
+      'PAYMENT_METHOD_INVALID',
+    );
+  }
+  return normalized;
+}
+
+function normalizeTender(value: unknown): NormalizedTender {
+  const tender = bodyRecord(value);
+  if (typeof tender.kind !== 'string') {
+    throw new RetailInputError('Choose a supported payment method.');
+  }
+  const kind = tender.kind.trim().toLowerCase();
+  if (!tenderKinds.has(kind)) {
+    throw new RetailInputError('Choose a supported payment method.');
+  }
+  if (kind !== 'cash' && kind !== 'other') {
+    throw new RetailConflictError(
+      'Card, gift card, and store-credit payments require a trusted server-side payment adapter.',
+      'POS_PAYMENT_PROVIDER_REQUIRED',
+    );
+  }
+  const providerReference = singleLineText(
+    tender.providerReference,
+    'Payment reference',
+    180,
+  );
+  const submittedProvider = singleLineText(
+    tender.provider,
+    'Payment method',
+    80,
+  );
+  return {
+    kind,
+    amountCents: parseCents(tender.amountCents, 'Tender amount'),
+    provider:
+      kind === 'cash' ? 'mdcart' : normalizeManualProvider(submittedProvider),
+    providerReference,
+  };
+}
+
+function paymentMethodName(tender: {
+  kind: unknown;
+  provider?: unknown;
+}): string {
+  if (tender.kind === 'cash') return 'cash';
+  if (
+    tender.kind === 'other' &&
+    typeof tender.provider === 'string' &&
+    tender.provider.trim()
+  ) {
+    return tender.provider.trim();
+  }
+  return typeof tender.kind === 'string' && tender.kind.trim()
+    ? tender.kind.trim()
+    : 'other';
+}
+
+function uniquePaymentMethods(
+  tenders: readonly { kind: unknown; provider?: unknown }[],
+): string[] {
+  return [...new Set(tenders.map(paymentMethodName))];
+}
+
+function uniqueTenderKinds(
+  tenders: readonly { kind: unknown; provider?: unknown }[],
+): string[] {
+  return [
+    ...new Set(
+      tenders
+        .map((tender) =>
+          typeof tender.kind === 'string' ? tender.kind.trim() : '',
+        )
+        .filter(Boolean),
+    ),
+  ];
+}
 
 function storedSale(row: Record<string, unknown>): Response {
   return Response.json(
@@ -71,6 +232,7 @@ function saleAuditStatement(
   sale: Record<string, unknown>,
   actorUserId: string,
   createdAt: string,
+  tenders: readonly { kind: unknown; provider?: unknown }[],
 ): D1PreparedStatement {
   const saleId = typeof sale.id === 'string' ? sale.id : '';
   if (!saleId) throw new Error('A sale ID is required for the audit trail.');
@@ -94,7 +256,8 @@ function saleAuditStatement(
         totalCents: sale.total_cents,
         locationId: sale.location_id,
         registerId: sale.register_id,
-        tenderKinds: ['cash'],
+        tenderKinds: uniqueTenderKinds(tenders),
+        paymentMethods: uniquePaymentMethods(tenders),
       }),
       createdAt,
     );
@@ -105,11 +268,23 @@ async function ensureSaleAudit(
   sale: Record<string, unknown>,
   actorUserId: string,
 ): Promise<void> {
+  const saleId = typeof sale.id === 'string' ? sale.id : '';
+  const tenders = saleId
+    ? await db
+        .prepare(
+          `SELECT kind, provider FROM retail_sale_tenders
+           WHERE sale_id = ? AND direction = 'payment' AND status = 'captured'
+           ORDER BY created_at, id`,
+        )
+        .bind(saleId)
+        .all<{ kind: string; provider: string | null }>()
+    : { results: [] };
   await saleAuditStatement(
     db,
     sale,
     actorUserId,
     typeof sale.created_at === 'string' ? sale.created_at : isoNow(),
+    tenders.results,
   ).run();
 }
 
@@ -117,34 +292,19 @@ export async function POST(request: Request) {
   try {
     const user = await requireRetailPermission(request, 'pos.sell');
     await ensureRetailDefaults();
-    const body = (await request.json()) as {
-      idempotencyKey?: string;
-      status?: 'held' | 'completed';
-      locationId?: string;
-      registerId?: string;
-      shiftId?: string;
-      items?: RequestedLine[];
-      lines?: RequestedLine[];
-      discountCents?: unknown;
-      tender?: {
-        kind?: string;
-        amountCents?: unknown;
-        provider?: string;
-        providerReference?: string;
-      };
-      tenders?: Array<{
-        kind?: string;
-        amountCents?: unknown;
-        provider?: string;
-        providerReference?: string;
-      }>;
-      customerName?: string;
-      customerEmail?: string;
-      note?: string;
-    };
+    const rawBody = (await request.json().catch(() => null)) as unknown;
+    if (
+      rawBody === null ||
+      typeof rawBody !== 'object' ||
+      Array.isArray(rawBody)
+    ) {
+      throw new RetailInputError('Enter valid sale details.');
+    }
+    const body = rawBody as SaleRequestBody;
+    const bodyIdempotencyKey =
+      typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() : '';
     const idempotencyKey =
-      request.headers.get('idempotency-key')?.trim() ||
-      body.idempotencyKey?.trim();
+      request.headers.get('idempotency-key')?.trim() || bodyIdempotencyKey;
     if (
       !idempotencyKey ||
       idempotencyKey.length < 12 ||
@@ -155,12 +315,15 @@ export async function POST(request: Request) {
         'IDEMPOTENCY_KEY_REQUIRED',
       );
     }
+    const locationId = optionalText(body.locationId, 'Location', 180);
+    const registerId = optionalText(body.registerId, 'Register', 180);
+    const shiftId = optionalText(body.shiftId, 'Shift', 180);
     const submittedLines = body.items ?? body.lines;
     const saleStatus = body.status ?? 'completed';
     if (
-      !body.locationId?.trim() ||
-      !body.registerId?.trim() ||
-      !body.shiftId?.trim() ||
+      !locationId ||
+      !registerId ||
+      !shiftId ||
       !Array.isArray(submittedLines) ||
       submittedLines.length === 0 ||
       submittedLines.length > 100 ||
@@ -173,8 +336,10 @@ export async function POST(request: Request) {
       );
     }
     const quantities = new Map<string, number>();
-    for (const line of submittedLines) {
-      const variantId = line.variantId?.trim();
+    for (const submittedLine of submittedLines) {
+      const line = bodyRecord(submittedLine);
+      const variantId =
+        typeof line.variantId === 'string' ? line.variantId.trim() : '';
       const quantity = parseRetailInteger(line.quantity, 'Quantity', {
         min: 1,
         max: 10_000,
@@ -182,57 +347,66 @@ export async function POST(request: Request) {
       if (!variantId) throw new RetailInputError('Every item needs a variant.');
       quantities.set(variantId, (quantities.get(variantId) ?? 0) + quantity);
     }
-    const submittedTenders = body.tenders ?? (body.tender ? [body.tender] : []);
+    const submittedTenders =
+      body.tenders ?? (body.tender !== undefined ? [body.tender] : []);
+    if (!Array.isArray(submittedTenders)) {
+      throw new RetailInputError('Choose a supported payment method.');
+    }
     if (submittedTenders.length === 0 || submittedTenders.length > 8) {
       throw new RetailInputError(
         'Choose at least one supported payment method.',
       );
     }
-    if (
-      submittedTenders.some(
-        (tender) => !tenderKinds.has(tender.kind?.trim() ?? ''),
-      )
-    ) {
-      throw new RetailInputError('Choose a supported payment method.');
-    }
-    if (
-      body.customerEmail &&
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.customerEmail.trim())
-    ) {
+    const customerName = optionalText(body.customerName, 'Customer name', 160);
+    const customerEmail = optionalText(
+      body.customerEmail,
+      'Customer email',
+      320,
+    )?.toLowerCase();
+    const note = optionalText(body.note, 'Note', 1000);
+    if (customerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
       throw new RetailInputError('Enter a valid customer email address.');
     }
 
     const discountCents = parseCents(body.discountCents ?? 0, 'Discount');
-    const normalizedTenders = submittedTenders.map((tender) => ({
-      kind: tender.kind!.trim(),
-      amountCents: parseCents(tender.amountCents, 'Tender amount'),
-      provider: tender.provider?.trim().slice(0, 80) || null,
-      providerReference: tender.providerReference?.trim().slice(0, 180) || null,
-    }));
-    if (normalizedTenders.some((tender) => tender.kind !== 'cash')) {
-      throw new RetailConflictError(
-        'Non-cash POS payments require a trusted server-side terminal or payment adapter. Use cash until one is configured.',
-        'POS_PAYMENT_PROVIDER_REQUIRED',
+    const normalizedTenders = submittedTenders.map(normalizeTender);
+    if (
+      normalizedTenders.filter((tender) => tender.kind === 'cash').length > 1
+    ) {
+      throw new RetailInputError(
+        'Combine cash into one tender amount so change and drawer totals stay exact.',
       );
     }
-    const requestFingerprint = await digestHex(
+    const fingerprintPayload = (tenders: readonly unknown[]) =>
       JSON.stringify({
-        locationId: body.locationId,
-        registerId: body.registerId,
-        shiftId: body.shiftId,
+        locationId,
+        registerId,
+        shiftId,
         status: saleStatus,
         lines: [...quantities.entries()].sort(([left], [right]) =>
           left.localeCompare(right),
         ),
         discountCents,
-        tenders: [...normalizedTenders].sort((left, right) =>
+        tenders: [...tenders].sort((left, right) =>
           JSON.stringify(left).localeCompare(JSON.stringify(right)),
         ),
-        customerName: body.customerName?.trim() || null,
-        customerEmail: body.customerEmail?.trim().toLowerCase() || null,
-        note: body.note?.trim() || null,
-      }),
-    );
+        customerName,
+        customerEmail,
+        note,
+      });
+    const [requestFingerprint, legacyCashFingerprint] = await Promise.all([
+      digestHex(fingerprintPayload(normalizedTenders)),
+      digestHex(
+        fingerprintPayload(
+          normalizedTenders.map((tender) =>
+            tender.kind === 'cash' ? { ...tender, provider: null } : tender,
+          ),
+        ),
+      ),
+    ]);
+    const matchesRequestFingerprint = (fingerprint: unknown) =>
+      fingerprint === requestFingerprint ||
+      fingerprint === legacyCashFingerprint;
 
     const db = database();
     const scopedIdempotencyKey = `${user.id}:${idempotencyKey}`;
@@ -257,7 +431,7 @@ export async function POST(request: Request) {
       }
       if (
         priorAttempt.operation !== 'pos_sale' ||
-        stored.fingerprint !== requestFingerprint
+        !matchesRequestFingerprint(stored.fingerprint)
       ) {
         throw new RetailConflictError(
           'That idempotency key was already used for a different sale.',
@@ -288,15 +462,16 @@ export async function POST(request: Request) {
       return storedSale(previous);
     }
 
-    await ensureLocationInventory(body.locationId, {
+    await ensureLocationInventory(locationId, {
       variantIds: [...quantities.keys()],
       seedFromLegacyStock: false,
     });
     const placeholders = [...quantities.keys()].map(() => '?').join(',');
-    const [shift, variants, settings] = await Promise.all([
+    const [shift, variants] = await Promise.all([
       db
         .prepare(
-          `SELECT s.id, r.location_id, s.register_id, l.tax_rate_basis_points
+          `SELECT s.id, s.currency, r.location_id, s.register_id,
+                  l.tax_rate_basis_points
            FROM register_shifts s
            JOIN retail_registers r ON r.id = s.register_id
            JOIN retail_locations l ON l.id = r.location_id
@@ -305,18 +480,13 @@ export async function POST(request: Request) {
              AND (? = 0 OR s.opened_by = ?)
            LIMIT 1`,
         )
-        .bind(
-          body.shiftId,
-          body.registerId,
-          body.locationId,
-          cashierOwnOnly ? 1 : 0,
-          user.id,
-        )
+        .bind(shiftId, registerId, locationId, cashierOwnOnly ? 1 : 0, user.id)
         .first<{
           id: string;
           location_id: string;
           register_id: string;
           tax_rate_basis_points: number;
+          currency: string;
         }>(),
       db
         .prepare(
@@ -339,11 +509,8 @@ export async function POST(request: Request) {
            WHERE pv.id IN (${placeholders})
              AND pv.status = 'active' AND p.status <> 'archived'`,
         )
-        .bind(body.locationId, ...quantities.keys())
+        .bind(locationId, ...quantities.keys())
         .all<SaleVariant>(),
-      db
-        .prepare("SELECT currency FROM store_settings WHERE id = 'main'")
-        .first<{ currency: string }>(),
     ]);
     if (!shift)
       throw new RetailConflictError(
@@ -437,25 +604,25 @@ export async function POST(request: Request) {
         .bind(
           saleId,
           receiptNumber,
-          body.locationId,
-          body.registerId,
-          body.shiftId,
+          locationId,
+          registerId,
+          shiftId,
           user.id,
           saleStatus,
-          settings?.currency ?? 'USD',
+          shift.currency,
           subtotalCents,
           discountCents,
           taxCents,
           totalCents,
           costCents,
           scopedIdempotencyKey,
-          body.customerName?.trim().slice(0, 160) || null,
-          body.customerEmail?.trim().toLowerCase().slice(0, 320) || null,
-          body.note?.trim().slice(0, 1000) || null,
+          customerName,
+          customerEmail,
+          note,
           saleStatus === 'completed' ? now : null,
           now,
           now,
-          body.shiftId,
+          shiftId,
           cashierOwnOnly ? 1 : 0,
           user.id,
         ),
@@ -466,26 +633,34 @@ export async function POST(request: Request) {
       ...normalizedTenders.filter((tender) => tender.kind !== 'cash'),
       ...normalizedTenders.filter((tender) => tender.kind === 'cash'),
     ];
+    const appliedTenders: NormalizedTender[] = [];
     for (const tender of allocationOrder) {
       const appliedAmount = Math.min(tender.amountCents, remainingTenderCents);
       if (appliedAmount === 0) continue;
       remainingTenderCents -= appliedAmount;
       if (tender.kind === 'cash') appliedCashCents += appliedAmount;
+      appliedTenders.push(tender);
       statements.push(
         db
           .prepare(
             `INSERT INTO retail_sale_tenders
-              (id, sale_id, kind, direction, amount_cents, provider,
+              (id, sale_id, shift_id, actor_user_id, kind, direction,
+               amount_cents, tendered_amount_cents, change_cents, provider,
                provider_reference, status, created_at)
-             VALUES (?, ?, ?, 'payment', ?, ?, ?, 'captured', ?)`,
+             VALUES (?, ?, ?, ?, ?, 'payment', ?, ?, ?, ?, ?, 'captured', ?)`,
           )
           .bind(
             createRetailId('tender'),
             saleId,
+            shiftId,
+            user.id,
             tender.kind,
             appliedAmount,
-            tender.provider ||
-              (tender.kind === 'card' ? 'external-terminal' : 'mdcart'),
+            tender.kind === 'cash' ? tender.amountCents : null,
+            tender.kind === 'cash'
+              ? Math.max(0, tender.amountCents - appliedAmount)
+              : null,
+            tender.provider,
             tender.providerReference,
             now,
           ),
@@ -547,7 +722,7 @@ export async function POST(request: Request) {
                SET on_hand = on_hand - ?, version = version + 1, updated_at = ?
                WHERE location_id = ? AND variant_id = ?`,
           )
-          .bind(quantity, now, body.locationId, variant.variant_id),
+          .bind(quantity, now, locationId, variant.variant_id),
         db
           .prepare(
             `INSERT INTO location_inventory_movements
@@ -559,7 +734,7 @@ export async function POST(request: Request) {
           )
           .bind(
             createRetailId('movement'),
-            body.locationId,
+            locationId,
             variant.product_id,
             variant.variant_id,
             -quantity,
@@ -569,7 +744,7 @@ export async function POST(request: Request) {
             `Receipt ${receiptNumber}`,
             user.id,
             now,
-            body.locationId,
+            locationId,
             variant.variant_id,
           ),
         db
@@ -629,7 +804,7 @@ export async function POST(request: Request) {
           .bind(
             appliedCashCents,
             now,
-            body.shiftId,
+            shiftId,
             cashierOwnOnly ? 1 : 0,
             user.id,
           ),
@@ -642,11 +817,12 @@ export async function POST(request: Request) {
           id: saleId,
           receipt_number: receiptNumber,
           total_cents: totalCents,
-          location_id: body.locationId,
-          register_id: body.registerId,
+          location_id: locationId,
+          register_id: registerId,
         },
         user.id,
         now,
+        appliedTenders,
       ),
     );
     try {
@@ -693,7 +869,7 @@ export async function POST(request: Request) {
             const stored = JSON.parse(
               racedAttempt.response_json,
             ) as StoredSaleAttempt;
-            if (stored.fingerprint !== requestFingerprint) {
+            if (!matchesRequestFingerprint(stored.fingerprint)) {
               throw new RetailConflictError(
                 'That idempotency key was already used for a different sale.',
                 'IDEMPOTENCY_CONFLICT',
@@ -716,7 +892,7 @@ export async function POST(request: Request) {
         totalCents,
         tenderedCents,
         changeCents,
-        currency: settings?.currency ?? 'USD',
+        currency: shift.currency,
         replayed: false,
         sale: { id: saleId, receiptNumber, status: saleStatus },
       },

@@ -15,21 +15,39 @@ The application lives in [`commerceos`](./commerceos).
 
 ## Quick start
 
-Requires Node.js 22.13+ and pnpm.
+Requires Node.js 22.13+ and pnpm 11.25.0.
+
+Linux or macOS:
 
 ```bash
 cd commerceos
+npm install --global pnpm@11.25.0
 pnpm install --frozen-lockfile
 cp .env.example .env.local
 pnpm db:local:apply
 pnpm dev
 ```
 
+Windows 11 PowerShell:
+
+```powershell
+Set-Location .\commerceos
+npm install --global pnpm@11.25.0
+pnpm.cmd install --frozen-lockfile
+Copy-Item .env.example .env.local
+pnpm.cmd db:local:apply
+pnpm.cmd dev
+```
+
 Open `http://localhost:3000`, or visit `/admin` to configure the store.
 
 Before deploying publicly, replace or protect the demo bootstrap flow, connect production email and customer identity, and implement a hosted payment provider with signed webhooks. MDCart never accepts or stores raw card data; the included checkout uses a mock payment provider.
 
-See [`commerceos/README.md`](./commerceos/README.md) for architecture and extension points, [`commerceos/docs/DEPLOYMENT.md`](./commerceos/docs/DEPLOYMENT.md) for environment and global-domain setup, and [`commerceos/docs/LICENSING.md`](./commerceos/docs/LICENSING.md) for downstream licensing guidance.
+See [`commerceos/README.md`](./commerceos/README.md) for architecture and
+extension points, the [Linux](./commerceos/docs/DEPLOYMENT_LINUX.md) and
+[Windows 11](./commerceos/docs/DEPLOYMENT_WINDOWS.md) step-by-step deployment
+guides, the [full deployment reference](./commerceos/docs/DEPLOYMENT.md), and
+the [downstream licensing guide](./commerceos/docs/LICENSING.md).
 
 ## License
 

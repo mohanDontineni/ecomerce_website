@@ -4,13 +4,23 @@ MDCart's supported server runtime is Cloudflare Workers with D1 and R2. This
 guide covers local development, a linked OpenAI Site, isolated Cloudflare
 staging and production environments, and an operator-owned global DNS name.
 
+Linux and Windows are supported deployment workstations, not alternate server
+runtimes. For copy/paste platform steps, use the
+[Linux runbook](./DEPLOYMENT_LINUX.md) or the
+[Windows 11 PowerShell runbook](./DEPLOYMENT_WINDOWS.md). A conventional Linux
+VPS, Docker container, IIS site, or Windows Service is not a supported
+production target without first replacing the Cloudflare-specific runtime and
+storage adapters.
+
 Read [CONFIGURATION.md](./CONFIGURATION.md) and [SECURITY.md](../SECURITY.md)
 before exposing a deployment publicly.
 
 ## 1. Prerequisites
 
-- Node.js 22.13 or newer
-- pnpm and the committed `pnpm-lock.yaml`
+- Git and Node.js 22.13 or newer
+- pnpm 11.25.0 and the committed `pnpm-lock.yaml`
+- a Wrangler-supported operator OS: Windows 11, macOS 13.5 or newer, or Linux
+  with glibc 2.35 or newer
 - For direct deployment: a Cloudflare account, Wrangler authentication, an
   active DNS zone in that account, one D1 database and one R2 bucket per
   persistent environment
@@ -19,8 +29,10 @@ before exposing a deployment publicly.
 Install and validate the locked source:
 
 ```bash
+npm install --global pnpm@11.25.0
 pnpm install --frozen-lockfile
-pnpm check
+pnpm deploy:doctor
+pnpm deploy:check
 ```
 
 ## 2. Local development
@@ -102,6 +114,11 @@ Edit the ignored `wrangler.deploy.jsonc`:
 Wrangler `vars` and service bindings are environment-specific and must be
 repeated for staging and production.
 
+Run `pnpm deploy:doctor` after editing. It fails while deployment placeholders
+remain or the required `DB`/`FILES` bindings are absent. A Wrangler dry-run
+checks the package shape but does not prove that remote resources, account
+permissions, or DNS are correct.
+
 ## 5. Build, migrate, and deploy staging
 
 Build with the same public origin that staging will use:
@@ -109,7 +126,9 @@ Build with the same public origin that staging will use:
 ```bash
 NEXT_PUBLIC_SITE_URL=https://staging-shop.example.com pnpm build
 pnpm exec wrangler deploy --dry-run --config wrangler.deploy.jsonc --env staging
+pnpm exec wrangler d1 migrations list DB --remote --config wrangler.deploy.jsonc --env staging
 pnpm exec wrangler d1 migrations apply DB --remote --config wrangler.deploy.jsonc --env staging
+pnpm exec wrangler d1 migrations list DB --remote --config wrangler.deploy.jsonc --env staging
 pnpm exec wrangler deploy --config wrangler.deploy.jsonc --env staging
 ```
 
@@ -140,8 +159,8 @@ Before the first public deployment:
 
 - connect a real transactional email flow and remove client-visible codes;
 - connect a hosted payment provider and signed, idempotent webhooks;
-- keep retail non-cash tenders disabled until the external payment
-  terminal/provider adapter described below verifies capture server-side;
+- train staff that POS Venmo, Zelle, PayPal, and described Other entries are
+  manual bookkeeping only and must be confirmed outside MDCart;
 - configure a new production-only `MDCART_BOOTSTRAP_PASSWORD`, complete the
   forced first-owner reset, and delete the secret immediately afterward;
 - configure edge rate limits for authentication, checkout, and uploads;
@@ -161,7 +180,9 @@ Then build and deploy the exact production configuration:
 ```bash
 NEXT_PUBLIC_SITE_URL=https://shop.example.com pnpm build
 pnpm exec wrangler deploy --dry-run --config wrangler.deploy.jsonc --env production
+pnpm exec wrangler d1 migrations list DB --remote --config wrangler.deploy.jsonc --env production
 pnpm exec wrangler d1 migrations apply DB --remote --config wrangler.deploy.jsonc --env production
+pnpm exec wrangler d1 migrations list DB --remote --config wrangler.deploy.jsonc --env production
 pnpm exec wrangler deploy --config wrangler.deploy.jsonc --env production
 pnpm exec wrangler secret put MDCART_BOOTSTRAP_PASSWORD --config wrangler.deploy.jsonc --env production
 ```
@@ -211,15 +232,20 @@ partially received purchase orders, and completed import jobs present.
 
 ### External POS payment-terminal boundary
 
-The deployed MDCart Worker records cash tenders but rejects non-cash POS
-tenders. It does not talk directly to a card reader and must not receive raw
-cardholder data. Enabling non-cash requires a trusted server-side terminal
-adapter that must:
+The deployed MDCart Worker records physical Cash plus cashier-confirmed Venmo,
+Zelle, PayPal, and described Other methods. Only Cash changes drawer
+expectations. The other methods are bookkeeping records: MDCart does not
+transfer, authorize, verify, settle, reconcile, or externally refund those
+funds. It rejects card, gift-card, and store-credit tenders and does not talk
+directly to a card reader. It must never receive raw cardholder data.
+
+Automating or guaranteeing a non-cash payment requires a trusted server-side
+terminal/provider adapter that must:
 
 - use the terminal/provider's PCI-compliant SDK or hosted workflow;
 - authorize or capture before writing the MDCart sale;
-- verify capture server-side; a browser-supplied provider name/reference must
-  never be sufficient;
+- verify capture server-side; a browser-supplied provider name, manual method,
+  or reference must never be sufficient;
 - verify signatures, reconcile timeouts, and use provider-side idempotency;
 - map approved refunds to the provider while keeping MDCart's refund and stock
   records consistent; and
@@ -309,11 +335,13 @@ production deployment.
 
 ## Official references
 
+- [Install and update Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
 - [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)
 - [Wrangler configuration and Custom Domains](https://developers.cloudflare.com/workers/wrangler/configuration/)
 - [Cloudflare Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
-- [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
+- [D1 Wrangler commands and migrations](https://developers.cloudflare.com/d1/wrangler-commands/)
 - [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
 - [D1 environment isolation](https://developers.cloudflare.com/d1/configuration/environments/)
 - [R2 Worker bindings](https://developers.cloudflare.com/r2/api/workers/workers-api-usage/)
+- [R2 Wrangler commands](https://developers.cloudflare.com/r2/reference/wrangler-commands/)
 - [Cloudflare for SaaS custom hostnames](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/domain-support/)

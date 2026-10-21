@@ -16,6 +16,7 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
@@ -23,6 +24,9 @@
     "lint": "oxlint app components/admin components/storefront lib db",
     "typecheck": "tsc --noEmit",
     "check": "pnpm lint && pnpm typecheck && pnpm build",
+    "deploy:doctor": "node scripts/check-deployment-readiness.mjs",
+    "deploy:check": "pnpm check && node scripts/check-deployment-readiness.mjs --built",
+    "release:check": "pnpm deploy:check && pnpm licenses:check",
     "format": "oxfmt",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",

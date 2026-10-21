@@ -8,7 +8,7 @@ MDCart is a reference implementation rather than a turnkey regulated-commerce se
 
 - **Storefront:** department/category discovery, specification-aware search, grouped product details, image galleries, option selection, variant-aware cart and checkout, customer account, and order history
 - **Control center:** overview, reusable category paths, 50+ grouped retail product templates, up to three configurable option dimensions, grouped public/internal specifications, per-variant SKUs and inventory, multi-image uploads, stock ledger, order workflow, customer status, team invitations and roles, store copy/settings, audit log, appearance studio, and an owner-only clean-slate reset
-- **Retail hub:** location-aware inventory and movement ledger, registers and cash shifts, barcode/SKU point of sale, receipt-level sales history and full refunds, suppliers, purchase orders, partial receiving, and review-first bulk catalog/inventory imports
+- **Retail hub:** location-aware inventory and movement ledger, registers and cash shifts, barcode/SKU point of sale, downloadable individual/grouped bills, shift/register/product reporting with CSV exports, receipt-level sales history and full refunds, suppliers, purchase orders, partial receiving, and review-first bulk catalog/inventory imports
 - **Identity:** session cookies, PBKDF2 password hashing, forced bootstrap-password replacement, email verification, team invitations, logout, and server-side route guards
 - **Customization:** 12 palettes × 6 moods × 4 shape systems for 288 maintained combinations, custom colors, background/poster assets, overlay control, preview, publishing, and version history
 - **Commerce:** integer-cent money values, server-authoritative variant pricing, SKU-level stock validation, immutable order option snapshots, idempotency keys, customer aggregates, and a provider-neutral payment interface
@@ -16,7 +16,12 @@ MDCart is a reference implementation rather than a turnkey regulated-commerce se
 
 ## Run locally
 
+Install Node.js 22.13 or newer and pnpm 11.25.0. The commands below are for
+Linux/macOS; use the [Windows 11 PowerShell guide](./docs/DEPLOYMENT_WINDOWS.md)
+for native Windows commands.
+
 ```bash
+npm install --global pnpm@11.25.0
 pnpm install --frozen-lockfile
 cp .env.example .env.local
 pnpm db:local:apply
@@ -57,6 +62,8 @@ The reset preserves user and team accounts, customer profiles, store copy, theme
 
 - [Configuration reference](./docs/CONFIGURATION.md) — bindings, variables, environment isolation, authentication, and adapter boundaries
 - [Deployment and global domain guide](./docs/DEPLOYMENT.md) — local, OpenAI Sites, Cloudflare staging/production, migrations, custom DNS, TLS, backups, and rollback
+- [Linux deployment runbook](./docs/DEPLOYMENT_LINUX.md) — supported prerequisites and copy/paste staging and production steps
+- [Windows 11 deployment runbook](./docs/DEPLOYMENT_WINDOWS.md) — native PowerShell setup, deployment, and verification
 - [`wrangler.deploy.example.jsonc`](./wrangler.deploy.example.jsonc) — separate staging and production D1/R2 resources and Custom Domains
 - [Security policy](./SECURITY.md) — production-hardening requirements and vulnerability reporting
 
@@ -77,14 +84,15 @@ Regulated templates—including pharmacy, alcohol, medical products, gift cards,
 
 The admin Retail hub extends the online catalog into store operations without creating a second product database:
 
-- **POS** sells the same variants used by the storefront. Choose a location and register, open a shift with its opening cash, find items by SKU or barcode, build a cart, and complete a cash sale. Non-cash tenders are rejected until a trusted server-side payment adapter verifies them.
+- **POS** sells the same variants used by the storefront. Choose a location and register, open a shift with its opening cash, find items by SKU or barcode, build a cart, and record Cash, Venmo, Zelle, PayPal, or a described Other payment. Only Cash changes drawer expectations; the other choices are cashier-confirmed bookkeeping records and do not transfer or verify funds.
 - **Sales** preserves receipt, location, register, cashier, line, tax, discount, tender, and shift details. The current refund workflow is a full refund: it records reversing tenders, returns quantities to the sale location, and updates shift cash totals where applicable.
+- **Reports & bills** provides an independent date, location, register, and shift scope. It reconciles gross sales, refunds, net sales, units, opening/expected/closing cash, and variance and drills each shift into its products and bills. Owners and administrators can bulk-download grouped printable bills and export sales lines, products, shifts, and every configured register as CSV; users with sales access can download individual bills, with cashiers limited to their own. Printable HTML bills can be opened in a browser and saved as PDF.
 - **Purchasing** manages suppliers and submitted purchase orders. Receiving can be partial, adds stock only to the destination location, and leaves a location-inventory movement trail.
 - **Locations** separates on-hand quantities by store or warehouse, supports multiple registers, records exact-SKU adjustments, and displays the immutable movement ledger. The first retail visit creates a main location and register for an existing single-location catalog.
 
 The Bulk import tab accepts CSV, TSV, JSON, and XLSX files in three modes: catalog upsert, inventory snapshot (replace on-hand with a counted quantity), and inventory delta (add or subtract a signed quantity). MDCart parses and maps the file in the browser, groups variants, resolves safe cross-sheet item-ID collisions, separates blocking errors from review guidance, and requires a staged review before anything is applied. A blank catalog price is imported as zero and displayed as `Free`; inventory-only modes never change prices. A staged job currently accepts 1–2,000 reviewed rows. See the [import configuration contract](./docs/CONFIGURATION.md#bulk-inventory-import-contract) and [sample catalog CSV](./docs/examples/inventory-import.csv).
 
-For deterministic variant families, give every child row the same `parentSku`; that parent identifier must differ from every child `sku`. When it is absent, contiguous rows with options and the same normalized name, brand, and category are auto-grouped for review, can inherit shared parent fields, and receive a stable internal parent identifier. Ambiguous duplicate inferred families are rejected until an explicit parent is supplied. Interrupted jobs can be resumed safely from Import history. Rows without variant evidence stay independent. Owners and admins have every retail permission. The `cashier` role can sell only against a shift that cashier opened, manage that shift, view inventory, and view sales; the `purchasing` role can manage inventory, suppliers and purchase orders, run catalog imports, and view sales/reports.
+For deterministic variant families, give every child row the same `parentSku`; that parent identifier must differ from every child `sku`. When it is absent, contiguous rows with options and the same normalized name, brand, and category are auto-grouped for review, can inherit shared parent fields, and receive a stable internal parent identifier. Ambiguous duplicate inferred families are rejected until an explicit parent is supplied. Interrupted jobs can be resumed safely from Import history. Rows without variant evidence stay independent. Owners and admins have every retail permission, including bulk report export. The `cashier` role can sell only against a shift that cashier opened, manage that shift, view inventory, and view sales; the `purchasing` role can manage inventory, suppliers and purchase orders, run catalog imports, and view sales/reports but cannot bulk-export reports.
 
 ## Architecture
 
@@ -92,13 +100,19 @@ The UI is organized under `app/` and `components/`. Server-only database, seed, 
 
 The mock payment adapter implements the same boundary expected of a real provider. A production adapter should create provider sessions, verify signed webhooks against the raw request body, persist payment attempts separately, and retain the existing idempotency behavior. Do not send raw card data through MDCart routes.
 
-Retail POS is cash-only by default. Its API rejects card, gift-card, store-credit, and other non-cash tenders until a trusted server-side adapter is implemented to authorize, capture, and verify those funds. Such an adapter must never send a PAN, CVV, PIN, track data, or terminal encryption key through MDCart routes.
+Retail POS accepts physical Cash and cashier-confirmed Venmo, Zelle, PayPal,
+or described Other records. MDCart does not transfer, verify, settle, reconcile,
+or refund those external funds; staff must confirm them outside MDCart. The API
+still rejects card, gift-card, and store-credit tenders until a trusted
+server-side adapter authorizes, captures, and verifies them. Such an adapter
+must never send a PAN, CVV, PIN, track data, or terminal encryption key through
+MDCart routes.
 
 Product and theme media are written to R2 with generated object keys. Before exposing uploads to untrusted public users, add malware scanning and image re-encoding in the media adapter in addition to the current MIME and size validation.
 
 ## Deployment and operations
 
-The checked-in Sites manifest binds D1 as `DB` and R2 as `FILES`. Apply the checked-in Drizzle migrations in each isolated environment, then deploy the compiled Worker and client assets. Use a private first deployment while replacing bootstrap provisioning and wiring production email, identity, and payment adapters. For an operator-owned worldwide hostname, follow the Worker Custom Domain procedure in [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
+The checked-in Sites manifest binds D1 as `DB` and R2 as `FILES`. Apply the checked-in Drizzle migrations in each isolated environment, then deploy the compiled Worker and client assets. Use a private first deployment while replacing bootstrap provisioning and wiring production email, identity, and payment adapters. For copy/paste operator procedures use the [Linux](./docs/DEPLOYMENT_LINUX.md) or [Windows 11](./docs/DEPLOYMENT_WINDOWS.md) runbook; for an operator-owned worldwide hostname and architectural detail, follow [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
 
 For serious multi-store SaaS use, add tenant IDs and centralized tenant authorization to every business record. The current distribution is a single-store deployment that can be independently hosted and customized by each merchant.
 

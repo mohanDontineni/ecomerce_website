@@ -7,6 +7,7 @@ import {
   Barcode,
   Boxes,
   ChevronRight,
+  Download,
   Loader2,
   Minus,
   Package,
@@ -36,11 +37,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { catalogPrice, money } from '@/lib/domain';
 import { RetailEmpty, RetailSectionHeading } from './shared';
 import {
+  ADMIN_SESSION_EXPIRED_EVENT,
   cents,
   retailRequest,
   type RetailModuleProps,
   type RetailProduct,
-  type RetailTender,
 } from './types';
 
 type CartLine = {
@@ -48,10 +49,18 @@ type CartLine = {
   quantity: number;
 };
 
+type PaymentMethod = 'cash' | 'venmo' | 'zelle' | 'paypal' | 'other';
+
 type TenderDraft = {
   key: string;
-  kind: RetailTender['kind'];
+  method: PaymentMethod;
   amount: string;
+  otherMethod: string;
+};
+
+type CompletedSale = {
+  id: string;
+  receiptNumber: string;
 };
 
 type PosProductGroup = {
@@ -66,6 +75,14 @@ type PosProductGroup = {
 };
 
 const POS_PAGE_SIZE = 60;
+
+const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  cash: 'Cash',
+  venmo: 'Venmo',
+  zelle: 'Zelle',
+  paypal: 'PayPal',
+  other: 'Other',
+};
 
 const GENERIC_POS_CATEGORIES = new Set([
   '',
@@ -151,7 +168,11 @@ export function PosSection({
   refresh,
   notify,
   locationId,
-}: RetailModuleProps & { locationId: string }) {
+  onViewShiftReport,
+}: RetailModuleProps & {
+  locationId: string;
+  onViewShiftReport?: (shiftId: string) => void;
+}) {
   const [registerId, setRegisterId] = useState('');
   const [query, setQuery] = useState('');
   const [selectedGroupKey, setSelectedGroupKey] = useState('');
@@ -163,8 +184,13 @@ export function PosSection({
   const [tenders, setTenders] = useState<TenderDraft[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [lastSale, setLastSale] = useState<CompletedSale | null>(null);
+  const [lastClosedShiftId, setLastClosedShiftId] = useState('');
+  const [downloadingReceipt, setDownloadingReceipt] = useState(false);
   const scannerRef = useRef<HTMLInputElement>(null);
   const saleAttempt = useRef<{ signature: string; key: string } | null>(null);
+  const receiptDownloadSequence = useRef(0);
+  const receiptDownloadController = useRef<AbortController | null>(null);
 
   const registers = useMemo(
     () =>
@@ -182,14 +208,27 @@ export function PosSection({
     );
   }, [registers]);
   useEffect(() => {
+    receiptDownloadSequence.current += 1;
+    receiptDownloadController.current?.abort();
+    receiptDownloadController.current = null;
     setSelectedGroupKey('');
     setQuery('');
     setCart([]);
     setCheckoutOpen(false);
     setTenders([]);
     setError('');
+    setLastSale(null);
+    setLastClosedShiftId('');
+    setDownloadingReceipt(false);
     saleAttempt.current = null;
   }, [locationId]);
+  useEffect(
+    () => () => {
+      receiptDownloadSequence.current += 1;
+      receiptDownloadController.current?.abort();
+    },
+    [],
+  );
   useEffect(() => {
     setVisibleGroupLimit(POS_PAGE_SIZE);
     setVisibleItemLimit(POS_PAGE_SIZE);
@@ -198,6 +237,7 @@ export function PosSection({
   const activeShift = data.shifts.find(
     (shift) => shift.registerId === registerId && shift.status === 'open',
   );
+  const transactionCurrency = activeShift?.currency ?? currency;
   const location = data.locations.find((item) => item.id === locationId);
   const search = query.trim().toLocaleLowerCase();
   const sellableProducts = useMemo(
@@ -289,12 +329,22 @@ export function PosSection({
     (subtotalCents * (location?.taxRateBasisPoints ?? 0)) / 10_000,
   );
   const totalCents = subtotalCents + taxCents;
+  const selectedTender = tenders[0];
+  const selectedPaymentMethod = selectedTender?.method ?? 'cash';
+  const isCashPayment = selectedPaymentMethod === 'cash';
+  const selectedPaymentLabel =
+    selectedPaymentMethod === 'other'
+      ? selectedTender?.otherMethod.trim() || 'Other'
+      : PAYMENT_METHOD_LABELS[selectedPaymentMethod];
   const tenderedCents = tenders.reduce(
-    (sum, tender) => sum + cents(tender.amount),
+    (sum, tender) =>
+      sum + (tender.method === 'cash' ? cents(tender.amount) : totalCents),
     0,
   );
   const remainingCents = Math.max(0, totalCents - tenderedCents);
-  const changeCents = Math.max(0, tenderedCents - totalCents);
+  const changeCents = isCashPayment
+    ? Math.max(0, tenderedCents - totalCents)
+    : 0;
 
   function focusScanner() {
     requestAnimationFrame(() => scannerRef.current?.focus());
@@ -399,8 +449,10 @@ export function PosSection({
             openingCashCents: cents(form.get('openingCash')),
           }),
         });
+        setLastClosedShiftId('');
         notify('Register shift opened.');
       } else if (activeShift) {
+        const closedShiftId = activeShift.id;
         await retailRequest(apiBase + '/shifts/' + activeShift.id, {
           method: 'PATCH',
           body: JSON.stringify({
@@ -409,6 +461,7 @@ export function PosSection({
             note: form.get('note'),
           }),
         });
+        setLastClosedShiftId(closedShiftId);
         notify('Register shift closed and reconciled.');
       }
       setShiftDialog(null);
@@ -434,8 +487,9 @@ export function PosSection({
     setTenders([
       {
         key: crypto.randomUUID(),
-        kind: 'cash',
+        method: 'cash',
         amount: (totalCents / 100).toFixed(2),
+        otherMethod: '',
       },
     ]);
     saleAttempt.current = null;
@@ -444,6 +498,14 @@ export function PosSection({
 
   async function submitSale(form?: HTMLFormElement) {
     if (!activeShift || !registerId || !locationId || cart.length === 0) return;
+    const missingOtherMethod = tenders.some(
+      (tender) =>
+        tender.method === 'other' && tender.otherMethod.trim().length === 0,
+    );
+    if (missingOtherMethod) {
+      setError('Describe how the customer paid before finalizing this sale.');
+      return;
+    }
     if (tenderedCents < totalCents) {
       setError(
         'Add tender for the complete amount before finalizing this sale.',
@@ -467,10 +529,20 @@ export function PosSection({
         quantity: line.quantity,
         unitPriceCents: line.product.priceCents,
       })),
-      tenders: tenders.map((tender) => ({
-        kind: tender.kind,
-        amountCents: cents(tender.amount),
-      })),
+      tenders: tenders.map((tender) => {
+        const provider =
+          tender.method === 'cash'
+            ? 'mdcart'
+            : tender.method === 'other'
+              ? tender.otherMethod.trim()
+              : tender.method;
+        return {
+          kind: tender.method === 'cash' ? 'cash' : 'other',
+          provider,
+          amountCents:
+            tender.method === 'cash' ? cents(tender.amount) : totalCents,
+        };
+      }),
     };
     const signature = JSON.stringify(salePayload);
     if (!saleAttempt.current || saleAttempt.current.signature !== signature) {
@@ -478,8 +550,9 @@ export function PosSection({
     }
     try {
       const result = await retailRequest<{
+        saleId?: string;
         receiptNumber?: string;
-        sale?: { receiptNumber?: string };
+        sale?: { id?: string; receiptNumber?: string };
       }>(apiBase + '/sales', {
         method: 'POST',
         body: JSON.stringify({
@@ -488,13 +561,19 @@ export function PosSection({
         }),
       });
       saleAttempt.current = null;
+      const completedId = result.saleId || result.sale?.id;
+      const completedReceipt =
+        result.receiptNumber || result.sale?.receiptNumber;
+      if (completedId && completedReceipt) {
+        setLastSale({ id: completedId, receiptNumber: completedReceipt });
+      }
       setCart([]);
       setCheckoutOpen(false);
       notify(
-        (totalCents === 0 ? 'Free sale completed' : 'Cash sale completed') +
-          (result.receiptNumber || result.sale?.receiptNumber
-            ? ': ' + (result.receiptNumber || result.sale?.receiptNumber)
-            : '.'),
+        (totalCents === 0
+          ? 'Free sale completed'
+          : `${selectedPaymentLabel} sale completed`) +
+          (completedReceipt ? ': ' + completedReceipt : '.'),
       );
       await refresh();
     } catch (saleError) {
@@ -508,18 +587,80 @@ export function PosSection({
     }
   }
 
+  async function downloadLastReceipt() {
+    if (!lastSale) return;
+    receiptDownloadController.current?.abort();
+    const requestId = receiptDownloadSequence.current + 1;
+    const abortController = new AbortController();
+    const sale = lastSale;
+    receiptDownloadSequence.current = requestId;
+    receiptDownloadController.current = abortController;
+    setDownloadingReceipt(true);
+    try {
+      const response = await fetch(
+        `${apiBase}/sales/${encodeURIComponent(sale.id)}/receipt`,
+        { cache: 'no-store', signal: abortController.signal },
+      );
+      if (receiptDownloadSequence.current !== requestId) return;
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
+        }
+        const result = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          result?.error || 'The latest receipt could not be downloaded.',
+        );
+      }
+      const disposition = response.headers.get('content-disposition') ?? '';
+      const filename =
+        /filename="?([^";]+)"?/i.exec(disposition)?.[1] ||
+        `${sale.receiptNumber}.html`;
+      const blobUrl = URL.createObjectURL(await response.blob());
+      if (receiptDownloadSequence.current !== requestId) {
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = filename.replace(/[^A-Za-z0-9._-]+/g, '-');
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(blobUrl);
+      notify(`${sale.receiptNumber} downloaded.`);
+    } catch (downloadError) {
+      if (abortController.signal.aborted) return;
+      notify(
+        downloadError instanceof Error
+          ? downloadError.message
+          : 'The latest receipt could not be downloaded.',
+        'error',
+      );
+    } finally {
+      if (receiptDownloadSequence.current === requestId) {
+        receiptDownloadController.current = null;
+        setDownloadingReceipt(false);
+      }
+    }
+  }
+
   return (
     <>
       <RetailSectionHeading
         eyebrow="Register"
         title="Point of sale"
-        description="Scan products, build a cart, accept cash, and keep every in-store sale tied to the cashier's own open shift."
+        description="Scan products, build a cart, record payment, and keep every in-store sale tied to the cashier's own open shift."
         actions={
           <>
             <NativeSelect
               aria-label="Register"
               value={registerId}
-              onChange={(event) => setRegisterId(event.target.value)}
+              onChange={(event) => {
+                setRegisterId(event.target.value);
+                setLastClosedShiftId('');
+              }}
               className="min-w-48"
             >
               {registers.length === 0 ? (
@@ -558,6 +699,42 @@ export function PosSection({
             ? 'Opened ' + new Date(activeShift.openedAt).toLocaleTimeString()
             : 'Choose a register and open a shift to transact.'}
         </span>
+        {onViewShiftReport && (activeShift || lastClosedShiftId) ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="sm:ml-auto"
+            onClick={() =>
+              onViewShiftReport(activeShift?.id || lastClosedShiftId)
+            }
+          >
+            <Boxes />
+            {activeShift ? 'View shift report' : 'View closed shift report'}
+          </Button>
+        ) : null}
+        {lastSale ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className={
+              onViewShiftReport && (activeShift || lastClosedShiftId)
+                ? undefined
+                : 'sm:ml-auto'
+            }
+            onClick={() => void downloadLastReceipt()}
+            disabled={downloadingReceipt}
+            aria-busy={downloadingReceipt}
+          >
+            {downloadingReceipt ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <Download />
+            )}
+            {downloadingReceipt
+              ? 'Preparing receipt…'
+              : `Download ${lastSale.receiptNumber}`}
+          </Button>
+        ) : null}
       </div>
 
       {!locationId || registers.length === 0 ? (
@@ -673,7 +850,7 @@ export function PosSection({
                       type="button"
                       key={product.variantId}
                       onClick={() => addProduct(product)}
-                      aria-label={`${itemTitle}, SKU ${product.sku}, ${catalogPrice(product.priceCents, currency)}, ${product.stock} in stock`}
+                      aria-label={`${itemTitle}, SKU ${product.sku}, ${catalogPrice(product.priceCents, transactionCurrency)}, ${product.stock} in stock`}
                       className="group min-h-40 overflow-hidden rounded-xl border bg-background text-left transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <span className="grid aspect-[16/9] place-items-center overflow-hidden bg-muted">
@@ -695,7 +872,12 @@ export function PosSection({
                           {itemDetail}
                         </span>
                         <span className="mt-3 flex items-center justify-between gap-2 text-sm">
-                          <b>{catalogPrice(product.priceCents, currency)}</b>
+                          <b>
+                            {catalogPrice(
+                              product.priceCents,
+                              transactionCurrency,
+                            )}
+                          </b>
                           <small className="text-muted-foreground">
                             {product.stock} left
                           </small>
@@ -715,7 +897,7 @@ export function PosSection({
                       setSelectedGroupKey(group.key);
                       focusScanner();
                     }}
-                    aria-label={`${group.label}, ${group.skuCount} items, ${group.minPriceCents === group.maxPriceCents ? catalogPrice(group.minPriceCents, currency) : `${catalogPrice(group.minPriceCents, currency)} to ${catalogPrice(group.maxPriceCents, currency)}`}, ${group.stock} in stock`}
+                    aria-label={`${group.label}, ${group.skuCount} items, ${group.minPriceCents === group.maxPriceCents ? catalogPrice(group.minPriceCents, transactionCurrency) : `${catalogPrice(group.minPriceCents, transactionCurrency)} to ${catalogPrice(group.maxPriceCents, transactionCurrency)}`}, ${group.stock} in stock`}
                     className="group min-h-40 overflow-hidden rounded-xl border bg-background text-left transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="grid aspect-[16/9] place-items-center overflow-hidden bg-muted">
@@ -743,8 +925,11 @@ export function PosSection({
                       <span className="mt-3 flex items-center justify-between gap-2 text-sm">
                         <b>
                           {group.minPriceCents === group.maxPriceCents
-                            ? catalogPrice(group.minPriceCents, currency)
-                            : `${catalogPrice(group.minPriceCents, currency)}–${catalogPrice(group.maxPriceCents, currency)}`}
+                            ? catalogPrice(
+                                group.minPriceCents,
+                                transactionCurrency,
+                              )
+                            : `${catalogPrice(group.minPriceCents, transactionCurrency)}–${catalogPrice(group.maxPriceCents, transactionCurrency)}`}
                         </b>
                         <small className="text-muted-foreground">
                           {group.stock} in stock
@@ -875,7 +1060,7 @@ export function PosSection({
                         <strong className="text-sm">
                           {catalogPrice(
                             line.product.priceCents * line.quantity,
-                            currency,
+                            transactionCurrency,
                           )}
                         </strong>
                       </div>
@@ -887,16 +1072,16 @@ export function PosSection({
             <footer className="space-y-3 border-t bg-muted/30 p-4">
               <div className="flex justify-between text-sm">
                 <span>Subtotal</span>
-                <strong>{money(subtotalCents, currency)}</strong>
+                <strong>{money(subtotalCents, transactionCurrency)}</strong>
               </div>
               <div className="flex justify-between text-sm">
                 <span>Estimated tax</span>
-                <strong>{money(taxCents, currency)}</strong>
+                <strong>{money(taxCents, transactionCurrency)}</strong>
               </div>
               <Separator />
               <div className="flex justify-between text-lg">
                 <strong>Total</strong>
-                <strong>{money(totalCents, currency)}</strong>
+                <strong>{money(totalCents, transactionCurrency)}</strong>
               </div>
               <div>
                 <Button
@@ -904,7 +1089,7 @@ export function PosSection({
                   disabled={!activeShift || cart.length === 0}
                   onClick={beginCheckout}
                 >
-                  <Banknote /> Cash checkout
+                  <Banknote /> Take payment
                 </Button>
               </div>
             </footer>
@@ -933,7 +1118,7 @@ export function PosSection({
             <div>
               <Label htmlFor="shift-cash">
                 {shiftDialog === 'open' ? 'Opening cash' : 'Closing cash'} (
-                {currency})
+                {transactionCurrency})
               </Label>
               <Input
                 id="shift-cash"
@@ -993,12 +1178,12 @@ export function PosSection({
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {totalCents === 0 ? 'Complete free sale' : 'Complete cash sale'}
+              {totalCents === 0 ? 'Complete free sale' : 'Complete sale'}
             </DialogTitle>
             <DialogDescription>
               {totalCents === 0
                 ? 'No payment is required. Completing the sale records the receipt and deducts inventory.'
-                : 'No payment gateway is required. Clicking Paid in cash records the receipt, deducts inventory, and updates the expected cash drawer balance.'}
+                : 'Choose how the customer paid. Manual methods are confirmed by the cashier; MDCart records them but does not send or verify the payment.'}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -1031,12 +1216,14 @@ export function PosSection({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <strong className="block text-sm">
-                    {totalCents === 0 ? 'No payment due' : 'Cash payment'}
+                    {totalCents === 0 ? 'No payment due' : 'Payment details'}
                   </strong>
                   <span className="text-xs text-muted-foreground">
                     {totalCents === 0
-                      ? `This order total is ${money(totalCents, currency)} and can be completed as a free sale.`
-                      : 'Enter the amount received; any excess is calculated as change.'}
+                      ? `This order total is ${money(totalCents, transactionCurrency)} and can be completed as a free sale.`
+                      : isCashPayment
+                        ? 'Enter the cash received; any excess is calculated as change.'
+                        : 'Confirm the customer completed this payment outside MDCart.'}
                   </span>
                 </div>
                 <Badge variant="secondary">
@@ -1048,35 +1235,113 @@ export function PosSection({
               {totalCents === 0 ? (
                 <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm font-semibold">
                   <Banknote className="size-4 text-emerald-700" /> Free sale ·{' '}
-                  {money(0, currency)} due
+                  {money(0, transactionCurrency)} due
                 </div>
               ) : (
                 tenders.map((tender, index) => (
                   <div
                     key={tender.key}
-                    className="grid items-center gap-2 sm:grid-cols-[1fr_180px]"
+                    className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_180px]"
                   >
-                    <span className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm font-semibold">
-                      <Banknote className="size-4 text-emerald-700" /> Cash
-                    </span>
-                    <Input
-                      aria-label={'Tender ' + (index + 1) + ' amount'}
-                      type="number"
-                      min="0.01"
-                      step="0.01"
-                      inputMode="decimal"
-                      value={tender.amount}
-                      onChange={(event) =>
-                        setTenders((items) =>
-                          items.map((item) =>
-                            item.key === tender.key
-                              ? { ...item, amount: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      required
-                    />
+                    <div>
+                      <Label htmlFor={`sale-payment-method-${index}`}>
+                        Payment method
+                      </Label>
+                      <NativeSelect
+                        id={`sale-payment-method-${index}`}
+                        value={tender.method}
+                        onChange={(event) => {
+                          const method = event.target.value as PaymentMethod;
+                          setTenders((items) =>
+                            items.map((item) =>
+                              item.key === tender.key
+                                ? {
+                                    ...item,
+                                    method,
+                                    amount: (totalCents / 100).toFixed(2),
+                                    otherMethod: '',
+                                  }
+                                : item,
+                            ),
+                          );
+                          setError('');
+                        }}
+                      >
+                        <NativeSelectOption value="cash">
+                          Cash
+                        </NativeSelectOption>
+                        <NativeSelectOption value="venmo">
+                          Venmo
+                        </NativeSelectOption>
+                        <NativeSelectOption value="zelle">
+                          Zelle
+                        </NativeSelectOption>
+                        <NativeSelectOption value="paypal">
+                          PayPal
+                        </NativeSelectOption>
+                        <NativeSelectOption value="other">
+                          Other
+                        </NativeSelectOption>
+                      </NativeSelect>
+                    </div>
+                    <div>
+                      <Label htmlFor={`sale-payment-amount-${index}`}>
+                        {tender.method === 'cash'
+                          ? 'Amount received'
+                          : 'Payment amount'}
+                      </Label>
+                      <Input
+                        id={`sale-payment-amount-${index}`}
+                        aria-label={'Tender ' + (index + 1) + ' amount'}
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        inputMode="decimal"
+                        value={
+                          tender.method === 'cash'
+                            ? tender.amount
+                            : (totalCents / 100).toFixed(2)
+                        }
+                        onChange={(event) =>
+                          setTenders((items) =>
+                            items.map((item) =>
+                              item.key === tender.key
+                                ? { ...item, amount: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        readOnly={tender.method !== 'cash'}
+                        required
+                      />
+                    </div>
+                    {tender.method === 'other' ? (
+                      <div className="sm:col-span-2">
+                        <Label htmlFor={`sale-other-payment-${index}`}>
+                          How was the payment made?
+                        </Label>
+                        <Input
+                          id={`sale-other-payment-${index}`}
+                          value={tender.otherMethod}
+                          onChange={(event) => {
+                            setTenders((items) =>
+                              items.map((item) =>
+                                item.key === tender.key
+                                  ? {
+                                      ...item,
+                                      otherMethod: event.target.value,
+                                    }
+                                  : item,
+                              ),
+                            );
+                            setError('');
+                          }}
+                          placeholder="Apple Cash, check, bank transfer…"
+                          maxLength={80}
+                          required
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 ))
               )}
@@ -1084,15 +1349,28 @@ export function PosSection({
             <div className="grid gap-3 rounded-xl bg-muted p-4 sm:grid-cols-3">
               <span>
                 <small className="block text-muted-foreground">Total</small>
-                <strong>{money(totalCents, currency)}</strong>
+                <strong>{money(totalCents, transactionCurrency)}</strong>
               </span>
               <span>
-                <small className="block text-muted-foreground">Remaining</small>
-                <strong>{money(remainingCents, currency)}</strong>
+                <small className="block text-muted-foreground">
+                  {isCashPayment ? 'Remaining' : 'Payment amount'}
+                </small>
+                <strong>
+                  {money(
+                    isCashPayment ? remainingCents : totalCents,
+                    transactionCurrency,
+                  )}
+                </strong>
               </span>
               <span>
-                <small className="block text-muted-foreground">Change</small>
-                <strong>{money(changeCents, currency)}</strong>
+                <small className="block text-muted-foreground">
+                  {isCashPayment ? 'Change' : 'Method'}
+                </small>
+                <strong>
+                  {isCashPayment
+                    ? money(changeCents, transactionCurrency)
+                    : selectedPaymentLabel}
+                </strong>
               </span>
             </div>
             <div>
@@ -1123,7 +1401,9 @@ export function PosSection({
                   ? 'Completing sale…'
                   : totalCents === 0
                     ? 'Complete free sale'
-                    : 'Paid in cash — complete sale'}
+                    : isCashPayment
+                      ? 'Paid in cash — complete sale'
+                      : `Confirm ${selectedPaymentLabel} payment — complete sale`}
               </Button>
             </DialogFooter>
           </form>

@@ -32,6 +32,7 @@ export const RETAIL_PERMISSIONS = [
   'sales.view',
   'sales.refund',
   'reports.view',
+  'reports.export',
 ] as const;
 
 export type RetailRole = (typeof RETAIL_ROLES)[number];
